@@ -1,0 +1,10 @@
+resources/
+results/
+benchmarks/
+logs/
+tmp/
+target/
+config/samples.tsv
+.snakemake/
+.vscode/
+**.zip
