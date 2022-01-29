@@ -18,6 +18,7 @@ use itertools::Itertools;
 use noodles::vcf::header::Number;
 use noodles::vcf::record::info::field::Key;
 use noodles::vcf::record::info::field::Value::Integer;
+use ordered_float::OrderedFloat;
 use petgraph::prelude::*;
 use petgraph::visit::{Data, IntoNeighborsDirected, NodeCount};
 use priority_queue::double_priority_queue::DoublePriorityQueue;
@@ -162,9 +163,8 @@ impl<R: Seek + Read> GraphCaller<R> {
                             // first
                             let edge_a = graph.edge_weight(parent, *child_a).unwrap();
                             let edge_b = graph.edge_weight(parent, *child_b).unwrap();
-                            edge_a
-                                .coverage
-                                .total_cmp(&edge_b.coverage)
+                            OrderedFloat(edge_a.coverage)
+                                .cmp(&OrderedFloat(edge_b.coverage))
                                 .then(edge_a.num_split_reads.cmp(&edge_b.num_split_reads))
                                 .reverse()
                         })

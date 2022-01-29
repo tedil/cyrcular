@@ -1,5 +1,3 @@
-#![feature(total_cmp)]
-
 use anyhow::Result;
 use clap::Parser;
 

@@ -21,6 +21,7 @@ num-traits = "0.2.14"
 regex = "1"
 needletail = "0.4.1"
 statrs = "0.15.0"
+ordered-float = "2.10.0"
 
 [dependencies.enumflags2]
 version = "0.7.1"
