@@ -543,7 +543,7 @@ fn insert_split_edges(
     split_info: &SplitReadInfo,
     read_depth: &ReadDepth,
     graph: &mut BreakpointGraph,
-    breakpoints: &mut Vec<Breakpoint>,
+    breakpoints: &mut [Breakpoint],
 ) {
     let mut empty_split_tree = ArrayBackedIntervalTree::new();
     empty_split_tree.index();
