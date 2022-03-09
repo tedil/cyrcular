@@ -25,6 +25,9 @@ pub struct PlotArgs {
     #[clap(long, parse(from_os_str))]
     output: PathBuf,
 
+    #[clap(short, long, default_value = "3")]
+    breakpoint_margin: u32,
+
     #[clap(short, long, default_value = "0")]
     threads: u16,
 }
@@ -40,7 +43,14 @@ pub fn main_plot(args: PlotArgs) -> anyhow::Result<()> {
 
     for (event_id, cycles) in graph.valid_paths {
         for cycle in cycles {
-            let divs = plot_breakend(&args, &mut records_reader, &header, event_id, &cycle)?;
+            let divs = plot_breakend(
+                &args,
+                &mut records_reader,
+                &header,
+                event_id,
+                &cycle,
+                args.breakpoint_margin,
+            )?;
             let header = r##"<html><head><meta charset="utf-8"/></head><body>
             <script src="https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.5/MathJax.js?config=TeX-AMS-MML_SVG"></script>
             <script type="text/javascript">if (window.MathJax) {MathJax.Hub.Config({SVG: {font: "STIX-Web"}});}</script>
@@ -65,6 +75,7 @@ fn plot_breakend(
     header: &Header,
     event_id: EventId,
     cycle: &Cycle,
+    breakpoint_margin: u32,
 ) -> Result<Vec<String>> {
     let mut divs = Vec::new();
     for (i, &((from_id, from_pos), (to_id, to_pos), edge)) in cycle.edges.iter().enumerate() {
@@ -90,8 +101,14 @@ fn plot_breakend(
             // bam_region might be larger if flank > 0, todo
             let bam_region = bam::Region::new(from_id, from_pos, to_pos);
             let bin_size = auto_bin_size(&original_region);
-            let mut detailed_coverage =
-                detailed_coverage(records_reader, &plot_region, &bam_region, ref_len, bin_size)?;
+            let mut detailed_coverage = detailed_coverage(
+                records_reader,
+                &plot_region,
+                &bam_region,
+                ref_len,
+                bin_size,
+                breakpoint_margin,
+            )?;
             let plot = crate::plot::plot(
                 &mut detailed_coverage,
                 &original_region,

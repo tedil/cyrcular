@@ -37,6 +37,9 @@ pub(crate) struct PlotArgs {
 
     #[clap(short, long)]
     flank: Option<u32>,
+
+    #[clap(short, long, default_value = "3")]
+    breakpoint_margin: u32,
 }
 
 pub(crate) fn main(args: PlotArgs) -> Result<()> {
@@ -65,8 +68,14 @@ pub(crate) fn main(args: PlotArgs) -> Result<()> {
     if original_region.len() / bin_size > max_bins {
         bin_size = original_region.len() / max_bins;
     }
-    let mut detailed_coverage =
-        detailed_coverage(&mut reader, &args.region, &bam_region, target_end, bin_size)?;
+    let mut detailed_coverage = detailed_coverage(
+        &mut reader,
+        &args.region,
+        &bam_region,
+        target_end,
+        bin_size,
+        args.breakpoint_margin,
+    )?;
     let plot = plot(
         &mut detailed_coverage,
         &original_region,
@@ -105,16 +114,17 @@ pub(crate) fn detailed_coverage(
     bam_region: &bam::Region,
     ref_len: u32,
     bin_size: usize,
+    breakpoint_margin: u32,
 ) -> Result<HashMap<Feature, Vec<usize>>> {
     let n_bins = bam_region.len() as usize / bin_size + 1;
     let mut detailed_coverage = HashMap::new();
 
-    let play = 3;
+    let margin = breakpoint_margin;
     let split_reads = split_reads_for_region(
         &bam::Region::new(
             bam_region.ref_id(),
-            circle_region.start.saturating_sub(play),
-            circle_region.end.saturating_add(play).min(ref_len),
+            circle_region.start.saturating_sub(margin),
+            circle_region.end.saturating_add(margin).min(ref_len),
         ),
         reader,
     )?;
@@ -129,8 +139,8 @@ pub(crate) fn detailed_coverage(
     let read_breakpoint = |record: &bam::Record| -> AtBreakpoint {
         let rstart = record.start() as u32;
         let rend = record.calculate_end() as u32;
-        let start = (rstart as i64 - start).abs() < play as i64;
-        let end = (rend as i64 - end).abs() < play as i64;
+        let start = (rstart as i64 - start).abs() < margin as i64;
+        let end = (rend as i64 - end).abs() < margin as i64;
         match (start, end) {
             (true, true) => AtBreakpoint::Both,
             (true, false) => AtBreakpoint::Start,
