@@ -385,10 +385,16 @@ fn breakend_event<R: Read + Seek>(
 
     // for each edge in the path that's not just a neighbour edge,
     // build two breakend events which are mates.
-    // Special case paths with only two edges to avoid encoding one large and one zero-size circle
-    let edges = path
+    // odd/even edges are covered segments, even/odd edges are splits/deletions,
+    // so only keep every other edge.
+    let edges = path;
+    let first_is_neighbour = edges[0].2.edge_type.contains(EdgeType::Neighbour);
+
+    let edges = edges
         .iter()
-        .skip(if path.len() == 2 { 1 } else { 0 })
+        .enumerate()
+        .filter(|(i, _)| i % 2 == (first_is_neighbour as usize))
+        .map(|(_, e)| e)
         .collect_vec();
 
     // length of circle = sum of lengths of segments with coverage
