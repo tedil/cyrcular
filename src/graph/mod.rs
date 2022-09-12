@@ -11,7 +11,7 @@ use std::time::Instant;
 use anyhow::Result;
 use bam::Record;
 use bio::data_structures::interval_tree::ArrayBackedIntervalTree;
-use clap::lazy_static::lazy_static;
+use lazy_static::lazy_static;
 use enumflags2::{bitflags, BitFlags};
 use indexmap::set::IndexSet;
 use itertools::Itertools;
