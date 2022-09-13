@@ -319,9 +319,7 @@ pub struct EdgeInfo {
 impl Debug for EdgeInfo {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.write_fmt(format_args!(
-            "cov:    {:.2}\n\
-                splits: {}\n\
-                dist:   {}\n",
+            "cov: {:.2}, splits: {}, dist: {}",
             self.coverage, self.num_split_reads, self.distance
         ))
     }

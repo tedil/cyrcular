@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::BufReader;
 use std::path::PathBuf;
@@ -5,10 +6,10 @@ use std::path::PathBuf;
 use anyhow::Result;
 use bam::{Header, IndexedReader};
 use clap::Parser;
-use petgraph::dot::Dot;
+use itertools::Itertools;
 
 use crate::graph::cli::{EventId, GraphStorage};
-use crate::graph::{BreakpointGraph, Cycle, EdgeType};
+use crate::graph::{Breakpoint, BreakpointGraph, Cycle, Edge, EdgeInfo, EdgeType};
 use crate::plot::detailed_coverage;
 
 #[derive(Parser)]
@@ -141,31 +142,90 @@ fn auto_bin_size(region: &crate::plot::Region) -> usize {
     bin_size
 }
 
-pub fn graph_to_dot(graph: &BreakpointGraph) -> String {
-    let dot = Dot::with_attr_getters(
-        &graph,
-        &[],
-        &|_graph, (_, _, edge_weight)| {
-            let t = &edge_weight.edge_type;
-            format!(
-                "color=\"{}\"",
-                if t.contains(EdgeType::Neighbour) && t.contains(EdgeType::Split) {
-                    "#46A473"
-                } else if t.contains(EdgeType::Neighbour) && t.contains(EdgeType::Deletion) {
-                    "#CB7459"
-                } else if !t.contains(EdgeType::Neighbour) && t.contains(EdgeType::Split) {
-                    "#A38F2D"
-                } else if t.contains(EdgeType::Neighbour)
-                    && !t.contains(EdgeType::Split)
-                    && !t.contains(EdgeType::Deletion)
+pub fn graph_to_dot(graph: &BreakpointGraph, header: &Header) -> String {
+    // build node identifiers from reference id and positions for unique node names in dot repr.
+    let node_id = |node: &(u32, u32)| -> String { format!("node_{}_{}", node.0, node.1) };
+
+    // sort nodes by reference id and position, then generate node definitions
+    let nodes = graph.nodes().sorted_unstable().map(|node| {
+        let (ref_id, pos) = node;
+        let label = format!(
+            "{}:{}",
+            header
+                .reference_name(ref_id)
+                .unwrap_or(&format!("[{}]", ref_id)),
+            pos
+        );
+        format!("{} [label=\"{}\", shape = box]", node_id(&node), label)
+    });
+
+    // for edges, we also merge directed edges if both to -> from and from -> to edges exist
+    // with the same properties.
+    let mut edge_map: HashMap<(Breakpoint, Breakpoint), (Edge, bool)> = HashMap::new();
+
+    // generate edge label from edge information
+    let edge_label = |edge: &(Breakpoint, Breakpoint, EdgeInfo)| -> String {
+        let (from, to, edge_info) = edge;
+        let t = edge_info.edge_type;
+        let color = if t.contains(EdgeType::Neighbour) && t.contains(EdgeType::Split) {
+            "#46A473"
+        } else if t.contains(EdgeType::Neighbour) && t.contains(EdgeType::Deletion) {
+            "#CB7459"
+        } else if !t.contains(EdgeType::Neighbour) && t.contains(EdgeType::Split) {
+            "#A38F2D"
+        } else if t.contains(EdgeType::Neighbour)
+            && !t.contains(EdgeType::Split)
+            && !t.contains(EdgeType::Deletion)
+        {
+            "#7E87D6"
+        } else {
+            "black"
+        };
+        let label = format!("{:?}", edge_info);
+        format!(
+            "{} -> {} [label=\"{}\", color=\"{}\", fontsize = \"12\", minlen = \"{}\", penwidth = \"{:.2}\"]",
+            node_id(from),
+            node_id(to),
+            label,
+            color,
+            1.max(((edge_info.distance as f64 + 1.).log10() / 2.).round() as usize),
+            1f64.max((edge_info.coverage + 1.).log(4.)),
+        )
+    };
+
+    // if both from -> to and to -> from directed edges exist, merge into one edge
+    graph
+        .all_edges()
+        .sorted_unstable_by_key(|(from, to, _)| (*from, *to))
+        .for_each(|(from, to, edge_info)| {
+            if let Some((rev_edge, bidirectional)) = edge_map.get_mut(&(to, from)) {
+                if edge_info.distance == rev_edge.2.distance
+                    && edge_info.num_split_reads == rev_edge.2.num_split_reads
+                    && (edge_info.coverage - rev_edge.2.coverage).abs() < 1e-4
                 {
-                    "#7E87D6"
+                    *bidirectional = true;
                 } else {
-                    "black"
+                    edge_map.insert((from, to), ((from, to, *edge_info), false));
                 }
-            )
-        },
-        &|_, _| String::new(),
-    );
-    format!("{:?}", dot)
+            } else {
+                edge_map.insert((from, to), ((from, to, *edge_info), false));
+            }
+        });
+
+    // generate edge dot representations, set arrowheads according to directionality
+    let edges = edge_map.values().map(|(edge, bidirectional)| {
+        if *bidirectional {
+            format!("{} [dir=both]", edge_label(edge))
+        } else {
+            edge_label(edge)
+        }
+    });
+
+    format!(
+        "digraph {{\n\
+         rank = same;\n\
+         rankdir = LR;\n\
+         {} }}",
+        nodes.chain(edges).join(";\n")
+    )
 }

@@ -119,7 +119,7 @@ pub fn main_breakends(args: BreakendArgs) -> anyhow::Result<()> {
         eprintln!("Writing dot files");
         std::fs::create_dir_all(dot_dir)?;
         for (event_id, component) in events.into_iter().map(|event| (event.id, event.subgraph)) {
-            let dot = plot::graph_to_dot(&component);
+            let dot = plot::graph_to_dot(&component, &bam_header);
             let path = dot_dir.join(format!("{event_id}.dot", event_id = event_id));
             std::fs::write(path, dot)?;
         }
