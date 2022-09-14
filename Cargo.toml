@@ -9,9 +9,9 @@ edition = "2018"
 bam = "0.1.4"
 anyhow = "1.0.51"
 itertools = "0.10.1"
-clap = { version = "3.0.0-rc.4", features = ["derive"] }
+clap = { version = "3.2.16", features = ["derive"] }
 noodles = { version = "0.8", features = ["bcf", "vcf"] }
-bio = "0.39.0"
+bio = "0.42.0"
 rayon = "1.5.1"
 indexmap = "1.7.0"
 rmp = "0.8.10"
@@ -20,8 +20,9 @@ priority-queue = "1.2.1"
 num-traits = "0.2.14"
 regex = "1"
 needletail = "0.4.1"
-statrs = "0.15.0"
-ordered-float = "2.10.0"
+statrs = "0.16.0"
+ordered-float = "3.0.0"
+lazy_static = "1.4.0"
 
 [dependencies.enumflags2]
 version = "0.7.1"
@@ -40,7 +41,7 @@ version = "0.7.0"
 features = ["kaleido"]
 
 [dependencies.strum]
-version = "0.23.0"
+version = "0.24.1"
 features = ["derive"]
 
 [dependencies.flate2]

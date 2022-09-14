@@ -11,7 +11,7 @@ use std::time::Instant;
 use anyhow::Result;
 use bam::Record;
 use bio::data_structures::interval_tree::ArrayBackedIntervalTree;
-use clap::lazy_static::lazy_static;
+use lazy_static::lazy_static;
 use enumflags2::{bitflags, BitFlags};
 use indexmap::set::IndexSet;
 use itertools::Itertools;
@@ -103,10 +103,15 @@ impl<R: Seek + Read> GraphCaller<R> {
     pub(crate) fn breakends(&mut self, graph: &BreakpointGraph) -> Vec<BreakendEvent> {
         let is_valid_path = |path: &Vec<Breakpoint>| -> bool {
             use EdgeType::*;
+
+            let edge_weights = path
+                .windows(2)
+                .map(|w| *graph.edge_weight(w[0], w[1]).unwrap())
+                .collect_vec();
+
             let mut last_edge: Option<BitFlags<EdgeType>> = Option::None;
-            let valid = path.iter().tuple_windows().all(|(&a, &b)| {
-                // the edge is guaranteed to exist
-                let this_edge = graph.edge_weight(a, b).unwrap().edge_type;
+            let valid = edge_weights.iter().all(|edge| {
+                let this_edge = edge.edge_type;
                 let valid = if let Some(last_edge) = last_edge {
                     last_edge.contains(Neighbour)
                         && (this_edge.contains(Split) | this_edge.contains(Deletion))
@@ -119,14 +124,12 @@ impl<R: Seek + Read> GraphCaller<R> {
                 last_edge = Some(this_edge);
                 valid
             });
-            let has_some_coverage = path
-                .windows(2)
-                .map(|w| *graph.edge_weight(w[0], w[1]).unwrap())
-                .any(|weight| {
-                    weight.edge_type.contains(EdgeType::Neighbour)
-                        && weight.distance > 0
-                        && weight.coverage > 0.
-                });
+
+            let has_some_coverage = edge_weights.iter().step_by(2).all(|weight| {
+                weight.edge_type.contains(Neighbour) && weight.distance > 0 && weight.coverage > 0.
+            }) || edge_weights.iter().skip(1).step_by(2).all(|weight| {
+                weight.edge_type.contains(Neighbour) && weight.distance > 0 && weight.coverage > 0.
+            });
             valid && has_some_coverage
         };
 
@@ -383,16 +386,17 @@ fn breakend_event<R: Read + Seek>(
 
     // for each edge in the path that's not just a neighbour edge,
     // build two breakend events which are mates.
-    // Special case paths with only two edges to avoid encoding one large and one zero-size circle
-    let edges = path
-        .iter()
-        .skip(if path.len() == 2 { 1 } else { 0 })
-        .collect_vec();
+    // odd/even edges are covered segments, even/odd edges are splits/deletions,
+    // so only keep every other edge.
+    let edges = path;
+    let first_is_neighbour = edges[0].2.edge_type.contains(EdgeType::Neighbour);
 
     // length of circle = sum of lengths of segments with coverage
     let (num_segments, circle_length) = edges
         .iter()
-        .map(|(_start, _stop, weight)| {
+        .enumerate()
+        .filter(|(i, _)| i % 2 != (first_is_neighbour as usize))
+        .map(|(_, (_start, _stop, weight))| {
             if weight.edge_type.contains(EdgeType::Neighbour) {
                 (1, weight.distance)
             } else {
@@ -402,6 +406,13 @@ fn breakend_event<R: Read + Seek>(
         .fold((0u32, 0u32), |(n_segs, circ_len), (n, l)| {
             (n_segs + n, circ_len + l)
         });
+
+    let edges = edges
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| i % 2 == (first_is_neighbour as usize))
+        .map(|(_, e)| e)
+        .collect_vec();
 
     let num_edges = edges.len();
     for (i, (from, to, edge)) in edges
