@@ -34,7 +34,7 @@ pub struct PlotArgs {
 }
 
 pub fn main_plot(args: PlotArgs) -> Result<()> {
-    let graph: GraphStorage = rmp_serde::from_read(File::open(&args.graph).map(BufReader::new)?)?;
+    let graph = GraphStorage::from_path(&args.graph)?;
     let mut records_reader = bam::IndexedReader::build()
         .additional_threads(args.threads)
         .from_path(&args.input)?;
