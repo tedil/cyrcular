@@ -47,8 +47,4 @@ impl GraphStorage {
             std::fs::File::open(path).map(BufReader::new)?,
         )?)
     }
-
-    pub fn event(&self, id: EventId) -> Option<&Vec<Cycle>> {
-        self.valid_paths.get(&id)
-    }
 }
