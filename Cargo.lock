@@ -423,6 +423,7 @@ dependencies = [
  "bam",
  "bio",
  "clap",
+ "csv",
  "enumflags2",
  "flate2",
  "indexmap",
