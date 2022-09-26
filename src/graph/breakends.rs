@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::io::BufWriter;
 use std::path::PathBuf;
-use bio::io::gff::GffType::GFF3;
 
 use clap::Parser;
 use serde::Serialize;

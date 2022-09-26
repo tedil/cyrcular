@@ -23,6 +23,7 @@ needletail = "0.5.1"
 statrs = "0.16.0"
 ordered-float = "3.6.0"
 lazy_static = "1.4.0"
+csv = "1.1.6"
 
 [dependencies.enumflags2]
 version = "0.7.6"

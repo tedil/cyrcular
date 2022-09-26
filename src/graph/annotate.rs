@@ -1,7 +1,7 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::fs::File;
-use std::io::BufReader;
+use std::io::{BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
@@ -9,7 +9,7 @@ use bio::data_structures::interval_tree::ArrayBackedIntervalTree;
 use bio::io::gff;
 use bio::io::gff::GffType::GFF3;
 use clap::Parser;
-use flate2::bufread::GzDecoder;
+use flate2::bufread::MultiGzDecoder;
 use itertools::Itertools;
 use noodles::bcf::header::StringMap;
 use noodles::bcf::Reader;
@@ -18,9 +18,10 @@ use noodles::vcf::{Header, Record};
 use noodles::{bcf, vcf};
 use serde::Serialize;
 
-use crate::cli::{EventId, GraphStorage};
+use crate::cli::{CircleId, EventId, GraphStorage};
+use crate::common::ReferenceId;
 use crate::graph::EdgeType::Neighbour;
-use crate::graph::{CIRCLE_LENGTH_KEY, CIRCLE_SEGMENT_COUNT_KEY, SUPPORT_KEY};
+use crate::graph::{Cycle, Position};
 
 #[derive(Parser)]
 pub(crate) struct AnnotateArgs {
@@ -32,13 +33,17 @@ pub(crate) struct AnnotateArgs {
     #[clap(parse(from_os_str))]
     breakend_vcf: PathBuf,
 
-    /// Output table with annotated segments in tsv format
-    #[clap(parse(from_os_str))]
-    output: PathBuf,
-
-    /// GFF3 file with annotations with respect to the reference sequence
-    #[clap(parse(from_os_str))]
+    /// (b)gzipped GFF3 file containing annotations with respect to the reference sequence
+    #[clap(long, parse(from_os_str))]
     annotation: PathBuf,
+
+    /// Path for the overview circle table
+    #[clap(long, parse(from_os_str))]
+    circle_table: PathBuf,
+
+    /// Output directory for detailed per-segment information for each circle
+    #[clap(long, parse(from_os_str))]
+    segment_tables: PathBuf,
 }
 
 type Annotation = HashMap<String, ArrayBackedIntervalTree<u64, gff::Record>>;
@@ -47,19 +52,23 @@ fn read_gff3<P: AsRef<Path> + std::fmt::Debug>(
     filter: fn(&gff::Record) -> bool,
 ) -> Result<Annotation> {
     let mut annotations = gff::Reader::new(
-        File::open(path).map(BufReader::new).map(GzDecoder::new).unwrap(),
+        File::open(path)
+            .map(BufReader::new)
+            .map(MultiGzDecoder::new)
+            .unwrap(),
         GFF3,
     );
     let mut trees: HashMap<String, ArrayBackedIntervalTree<u64, gff::Record>> = HashMap::new();
     annotations
         .records()
-        .flatten()
+        .map(|r| r.unwrap())
         .filter(filter)
         .for_each(|r| {
             let tree = trees
                 .entry(r.seqname().to_string())
                 .or_insert_with(ArrayBackedIntervalTree::new);
-            tree.insert(*r.start()..*r.end(), r);
+            let (start, end) = (r.start().min(r.end()), r.start().max(r.end()));
+            tree.insert(*start..*end, r);
         });
     trees.values_mut().for_each(|tree| tree.index());
     Ok(trees)
@@ -82,6 +91,8 @@ pub(crate) fn main_annotate(args: AnnotateArgs) -> Result<()> {
 
     //let mut segment_tables: HashMap<EventId, Vec<_>> = HashMap::with_capacity(event_records.len());
 
+    std::fs::create_dir_all(&args.segment_tables)?;
+
     eprintln!("Building circle table");
     let circle_table = graph
         .valid_paths
@@ -90,79 +101,225 @@ pub(crate) fn main_annotate(args: AnnotateArgs) -> Result<()> {
             circles
                 .into_iter()
                 .enumerate()
-                .map(|(circle_id, circle)| {
-                    for (from, to, edge_info) in circle.edges {
-                        // skip non-neighbour edges or those without coverage
-                        if !edge_info.edge_type.contains(Neighbour) || edge_info.coverage <= 1e-4 {
-                            continue;
-                        }
-                        // skip edges that cross different contigs
-                        if from.0 != to.0 {
-                            continue;
-                        }
-                        let chrom = from.0;
-                        if let Some(annot) = annotations.get(&format!("chr{}", chrom + 1)) {
-                            let (from, to) = (from.1.min(to.1), from.1.max(to.1));
-                            let foo = annot
-                                .find(from as u64..to as u64)
-                                .iter()
-                                .map(|entry| entry.data())
-                                .cloned()
-                                .collect_vec();
-                            dbg!(&foo);
-                        }
-                    }
+                .filter_map(|(circle_id, circle)| {
                     let event_name = format!("graph_{}_circle_{}", graph_id, circle_id);
-                    let records = event_records.get(&event_name).expect("Event not found");
-                    get_varlociraptor_info(records, &event_name, circle_id)
+                    if let Some(records) = event_records.get(&event_name) {
+                        let chrom = format!("{}", records[0].chromosome());
+                        let chrom = chrom.strip_prefix("chr").unwrap_or(&chrom);
+                        let segment_annotations = segment_annotation(&annotations, circle, chrom);
+                        let varlociraptor_annotations = varlociraptor_info(records);
+
+                        let mut segment_writer =
+                            csv::WriterBuilder::new().delimiter(b'\t').from_writer(
+                                File::create(
+                                    &args
+                                        .segment_tables
+                                        .join(format!("{}_segments.tsv", event_name)),
+                                )
+                                .map(BufWriter::new)
+                                .unwrap(),
+                            );
+                        let entry = (
+                            graph_id,
+                            circle_id,
+                            varlociraptor_annotations,
+                            segment_annotations,
+                        );
+                        write_segment_table_into(&mut segment_writer, &entry).unwrap();
+                        Some(entry)
+                    } else {
+                        eprintln!("WARNING: Event {} not found in breakend VCF", event_name);
+                        None
+                    }
                 })
                 .collect_vec()
         })
         .collect_vec();
-    dbg!(&circle_table);
+
+    write_circle_table(
+        File::create(&args.circle_table).map(BufWriter::new)?,
+        &circle_table,
+    )?;
     Ok(())
 }
 
-fn get_varlociraptor_info(
-    records: &[Record],
-    event_name: &str,
-    circle_id: usize,
-) -> CircleTableInfo {
-    let num_exons = 0;
-    let genes = vec![];
+type Segment = (ReferenceId, Position, Position);
+type CircleTableEntry = (
+    EventId,
+    CircleId,
+    CircleInfo,
+    Vec<(Segment, Option<SegmentAnnotation>)>,
+);
+
+fn write_circle_table<W: Write>(writer: W, circle_table: &[CircleTableEntry]) -> Result<()> {
+    let mut writer: csv::Writer<_> = csv::WriterBuilder::new()
+        .delimiter(b'\t')
+        .from_writer(writer);
+    for (graph_id, circle_id, circle_info, segment_annotations) in circle_table {
+        let (num_exons, gene_ids, gene_names) = segment_annotations.iter().fold(
+            (0, vec![], vec![]),
+            |(mut n_ex, mut gids, mut gnames), (_, sa)| {
+                if let Some(sa) = sa {
+                    n_ex += sa.num_exons;
+                    gids.extend(&sa.gene_ids);
+                    gnames.extend(&sa.gene_names);
+                }
+                (n_ex, gids, gnames)
+            },
+        );
+        let gene_ids = gene_ids.into_iter().unique().join(",");
+        let gene_names = gene_names.into_iter().unique().join(",");
+        let cti = FlatCircleTableInfo {
+            graph_id: *graph_id,
+            circle_id: *circle_id,
+            circle_length: circle_info.length,
+            segment_count: circle_info.segment_count,
+            score: circle_info.score,
+            num_exons,
+            gene_ids,
+            gene_names,
+        };
+        writer.serialize(cti)?;
+    }
+    Ok(())
+}
+
+fn write_segment_table_into<W: Write>(
+    writer: &mut csv::Writer<W>,
+    circle_entry: &CircleTableEntry,
+) -> Result<()> {
+    let (graph_id, circle_id, circle_info, segment_annotations) = circle_entry;
+    #[derive(Serialize, Debug)]
+    struct SegmentEntry {
+        graph_id: usize,
+        circle_id: usize,
+        circle_length: usize,
+        segment_count: usize,
+        score: usize,
+        target: String,
+        from: Position,
+        to: Position,
+        length: Position,
+        num_exons: usize,
+        gene_ids: String,
+        gene_names: String,
+    }
+    for ((ref_id, from, to), annotation) in segment_annotations {
+        let (num_exons, gene_names, gene_ids) = if let Some(annotation) = annotation.as_ref() {
+            (
+                annotation.num_exons,
+                annotation.gene_names.join(","),
+                annotation.gene_ids.join(","),
+            )
+        } else {
+            (0, "".into(), "".into())
+        };
+        let entry = SegmentEntry {
+            graph_id: *graph_id,
+            circle_id: *circle_id,
+            circle_length: circle_info.length,
+            segment_count: circle_info.segment_count,
+            score: circle_info.score,
+            target: format!("todo: {}", ref_id),
+            from: *from,
+            to: *to,
+            length: from.abs_diff(*to),
+            num_exons,
+            gene_ids,
+            gene_names,
+        };
+        writer.serialize(entry)?;
+    }
+    Ok(())
+}
+
+fn segment_annotation(
+    annotations: &Annotation,
+    circle: Cycle,
+    chrom: &str,
+) -> Vec<((ReferenceId, Position, Position), Option<SegmentAnnotation>)> {
+    circle
+        .edges
+        .iter()
+        .filter(|(from, to, edge_info)| {
+            edge_info.edge_type.contains(Neighbour) && edge_info.coverage > 1e-4 && from.0 == to.0
+        })
+        .map(|&((ref_id, from), (_, to), _)| {
+            if let Some(annot) = annotations
+                .get(chrom)
+                .or_else(|| annotations.get(&format!("chr{}", chrom)))
+            {
+                let (from, to) = (from.min(to), from.max(to));
+                let segment_annotations = annot
+                    .find(from as u64..to as u64)
+                    .iter()
+                    .map(|entry| entry.data())
+                    .filter_map(|data| match data.feature_type() {
+                        "gene" => Some((
+                            0,
+                            data.attributes().get("gene_id").cloned(),
+                            data.attributes().get("gene_name").cloned(),
+                        )),
+                        "exon" => Some((
+                            1,
+                            data.attributes().get("gene_id").cloned(),
+                            data.attributes().get("gene_name").cloned(),
+                        )),
+                        _ => None,
+                    })
+                    .fold(
+                        SegmentAnnotation::default(),
+                        |mut acc, (num_exons, gene_id, gene_name)| {
+                            acc.num_exons += num_exons;
+                            acc.gene_ids.extend(gene_id);
+                            acc.gene_names.extend(gene_name);
+                            acc
+                        },
+                    );
+                ((ref_id, from, to), Some(segment_annotations))
+            } else {
+                ((ref_id, from, to), None)
+            }
+        })
+        .collect_vec()
+}
+
+fn varlociraptor_info(records: &[Record]) -> CircleInfo {
     let r = &records[0];
-    dbg!(&r);
-    let info = CircleTableInfo {
-        circle_id,
-        length: r
-            .info()
-            .get(&*CIRCLE_LENGTH_KEY)
-            .map(|f| match f.value() {
-                Value::Integer(i) => usize::try_from(*i).expect("Invalid circle length"),
-                _ => panic!("Expected integer value for circle length"),
-            })
-            .expect("'CircleLength' info field not found"),
-        segment_count: r
-            .info()
-            .get(&*CIRCLE_SEGMENT_COUNT_KEY)
-            .map(|f| match f.value() {
-                Value::Integer(i) => usize::try_from(*i).expect("Invalid segment count"),
-                _ => panic!("Expected integer value for segment count"),
-            })
-            .expect("'CircleSegmentCount' info field not found"),
-        score: r
-            .info()
-            .get(&*SUPPORT_KEY)
-            .map(|f| match f.value() {
-                Value::Integer(i) => usize::try_from(*i).expect("Invalid score"),
-                _ => panic!("Expected integer value for score"),
-            })
-            .expect("'Support' info field not found"),
-        num_exons,
-        genes,
-    };
-    dbg!(&info);
-    info
+    let circle_length_key = "CircleLength".parse::<Key>().unwrap();
+    let circle_segment_count_key = "CircleSegmentCount".parse::<Key>().unwrap();
+    let support_key = "Support".parse::<Key>().unwrap();
+
+    let length = r
+        .info()
+        .get(&circle_length_key)
+        .map(|f| match f.value() {
+            Value::Integer(i) => usize::try_from(*i).expect("Invalid circle length"),
+            _ => panic!("Expected integer value for circle length"),
+        })
+        .expect("'CircleLength' info field not found");
+    let segment_count = r
+        .info()
+        .get(&circle_segment_count_key)
+        .map(|f| match f.value() {
+            Value::Integer(i) => usize::try_from(*i).expect("Invalid segment count"),
+            _ => panic!("Expected integer value for segment count"),
+        })
+        .expect("'CircleSegmentCount' info field not found");
+    let score = r
+        .info()
+        .get(&support_key)
+        .map(|f| match f.value() {
+            Value::Integer(i) => usize::try_from(*i).expect("Invalid score"),
+            _ => panic!("Expected integer value for score"),
+        })
+        .expect("'Support' info field not found");
+
+    CircleInfo {
+        length,
+        segment_count,
+        score,
+    }
 }
 
 fn read_bcf(args: &AnnotateArgs) -> Result<(Reader<BufReader<File>>, Header, StringMap)> {
@@ -185,7 +342,11 @@ fn group_event_records(
     let event_records = reader
         .records()
         .flatten()
-        .flat_map(|r| r.try_into_vcf_record(&header, &string_map))
+        // .map(|r| {
+        //     r.try_into_vcf_record(header, string_map)
+        //         .unwrap_or_else(|_| panic!("{:?}:{:?}", &r.chromosome_id(), &r.position()))
+        // })
+        .flat_map(|r| r.try_into_vcf_record(header, string_map))
         .map(|r| {
             (
                 r.info()
@@ -199,12 +360,44 @@ fn group_event_records(
     event_records
 }
 
-#[derive(Serialize, Debug)]
-struct CircleTableInfo {
-    circle_id: usize,
+#[derive(Serialize, Debug, Clone, Copy)]
+struct CircleInfo {
     length: usize,
     segment_count: usize,
     score: usize,
+}
+
+#[derive(Debug, Default)]
+struct SegmentAnnotation {
     num_exons: usize,
-    genes: Vec<String>,
+    gene_ids: Vec<String>,
+    gene_names: Vec<String>,
+}
+
+#[derive(Serialize, Debug, Default)]
+struct CircleAnnotation {
+    num_exons: usize,
+    gene_ids: String,
+    gene_names: String,
+}
+
+// serialization of this with csv doesn't work when the header is derived
+// see https://github.com/BurntSushi/rust-csv/issues/188 and https://github.com/BurntSushi/rust-csv/pull/197
+// #[derive(Serialize, Debug)]
+// struct CircleTableInfo {
+//     graph_id: usize,
+//     circle_id: usize,
+//     circle_info: CircleInfo,
+//     annotation_info: CircleAnnotation,
+// }
+#[derive(Serialize, Debug)]
+struct FlatCircleTableInfo {
+    graph_id: usize,
+    circle_id: usize,
+    circle_length: usize,
+    segment_count: usize,
+    score: usize,
+    num_exons: usize,
+    gene_ids: String,
+    gene_names: String,
 }

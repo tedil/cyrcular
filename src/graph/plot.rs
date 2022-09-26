@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::BufReader;
 use std::path::PathBuf;
 
 use anyhow::Result;

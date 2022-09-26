@@ -32,6 +32,7 @@ pub(crate) fn main(args: GraphArgs) -> Result<()> {
     }
 }
 
+pub(crate) type CircleId = usize;
 pub(crate) type EventId = usize;
 
 #[derive(Serialize, Deserialize)]
