@@ -20,7 +20,7 @@ use serde::Serialize;
 
 use crate::cli::{CircleId, EventId, GraphStorage};
 use crate::common::ReferenceId;
-use crate::graph::EdgeType::Neighbour;
+use crate::graph::EdgeType::{Neighbour, Split};
 use crate::graph::{Cycle, Position};
 
 #[derive(Parser)]
@@ -143,7 +143,7 @@ pub(crate) fn main_annotate(args: AnnotateArgs) -> Result<()> {
     Ok(())
 }
 
-type Segment = (ReferenceId, Position, Position);
+type Segment = (ReferenceId, Position, ReferenceId, Position);
 type CircleTableEntry = (
     EventId,
     CircleId,
@@ -156,15 +156,35 @@ fn write_circle_table<W: Write>(writer: W, circle_table: &[CircleTableEntry]) ->
         .delimiter(b'\t')
         .from_writer(writer);
     for (graph_id, circle_id, circle_info, segment_annotations) in circle_table {
-        let (num_exons, gene_ids, gene_names) = segment_annotations.iter().fold(
-            (0, vec![], vec![]),
-            |(mut n_ex, mut gids, mut gnames), (_, sa)| {
+        let (num_exons, gene_ids, gene_names, num_split_reads) = segment_annotations.iter().fold(
+            (0, vec![], vec![], 0),
+            |(mut n_ex, mut gids, mut gnames, mut n_splits), (_, sa)| {
                 if let Some(sa) = sa {
-                    n_ex += sa.num_exons;
-                    gids.extend(&sa.gene_ids);
-                    gnames.extend(&sa.gene_names);
+                    match sa {
+                        SegmentAnnotation::Segment {
+                            num_exons,
+                            gene_ids,
+                            gene_names,
+                            num_split_reads,
+                            coverage: _,
+                        } => {
+                            n_ex += num_exons;
+                            gids.extend(gene_ids);
+                            gnames.extend(gene_names);
+                            n_splits += if circle_info.segment_count == 1 {
+                                // if there's only one segment, the split reads loop from one end of the segment to its other end
+                                *num_split_reads
+                            } else {
+                                // otherwise, split reads are described by junction edges and counted below
+                                0
+                            };
+                        }
+                        SegmentAnnotation::Junction { num_split_reads } => {
+                            n_splits += num_split_reads;
+                        }
+                    }
                 }
-                (n_ex, gids, gnames)
+                (n_ex, gids, gnames, n_splits)
             },
         );
         let gene_ids = gene_ids.into_iter().unique().join(",");
@@ -175,6 +195,7 @@ fn write_circle_table<W: Write>(writer: W, circle_table: &[CircleTableEntry]) ->
             circle_length: circle_info.length,
             segment_count: circle_info.segment_count,
             score: circle_info.score,
+            num_split_reads,
             num_exons,
             gene_ids,
             gene_names,
@@ -196,23 +217,52 @@ fn write_segment_table_into<W: Write>(
         circle_length: usize,
         segment_count: usize,
         score: usize,
-        target: String,
+        kind: Option<String>,
+        target_from: String,
         from: Position,
+        target_to: String,
         to: Position,
-        length: Position,
-        num_exons: usize,
-        gene_ids: String,
-        gene_names: String,
+        length: Option<Position>,
+        num_exons: Option<usize>,
+        gene_ids: Option<String>,
+        gene_names: Option<String>,
+        coverage: Option<f64>,
+        num_split_reads: Option<usize>,
     }
-    for ((ref_id, from, to), annotation) in segment_annotations {
-        let (num_exons, gene_names, gene_ids) = if let Some(annotation) = annotation.as_ref() {
-            (
-                annotation.num_exons,
-                annotation.gene_names.join(","),
-                annotation.gene_ids.join(","),
-            )
+    for ((from_ref_id, from, to_ref_id, to), annotation) in segment_annotations {
+        let (segment_type, num_exons, gene_names, gene_ids, num_split_reads, coverage) =
+            if let Some(annotation) = annotation.as_ref() {
+                match annotation {
+                    SegmentAnnotation::Segment {
+                        num_exons,
+                        gene_ids,
+                        gene_names,
+                        num_split_reads,
+                        coverage,
+                    } => (
+                        Some("coverage".to_string()),
+                        Some(*num_exons),
+                        Some(gene_names.join(",")),
+                        Some(gene_ids.join(",")),
+                        Some(*num_split_reads),
+                        Some(*coverage),
+                    ),
+                    SegmentAnnotation::Junction { num_split_reads } => (
+                        Some("split".to_string()),
+                        None,
+                        None,
+                        None,
+                        Some(*num_split_reads),
+                        None,
+                    ),
+                }
+            } else {
+                (None, None, None, None, None, None)
+            };
+        let is_coverage_segment = if let Some(k) = segment_type.as_ref() {
+            k == "coverage"
         } else {
-            (0, "".into(), "".into())
+            false
         };
         let entry = SegmentEntry {
             graph_id: *graph_id,
@@ -220,13 +270,21 @@ fn write_segment_table_into<W: Write>(
             circle_length: circle_info.length,
             segment_count: circle_info.segment_count,
             score: circle_info.score,
-            target: format!("todo: {}", ref_id),
+            kind: segment_type,
+            target_from: format!("todo: {}", from_ref_id),
             from: *from,
+            target_to: format!("todo: {}", to_ref_id),
             to: *to,
-            length: from.abs_diff(*to),
+            length: if is_coverage_segment {
+                Some(from.abs_diff(*to))
+            } else {
+                None
+            },
             num_exons,
             gene_ids,
             gene_names,
+            coverage,
+            num_split_reads,
         };
         writer.serialize(entry)?;
     }
@@ -237,48 +295,72 @@ fn segment_annotation(
     annotations: &Annotation,
     circle: Cycle,
     chrom: &str,
-) -> Vec<((ReferenceId, Position, Position), Option<SegmentAnnotation>)> {
+) -> Vec<(Segment, Option<SegmentAnnotation>)> {
     circle
         .edges
         .iter()
-        .filter(|(from, to, edge_info)| {
-            edge_info.edge_type.contains(Neighbour) && edge_info.coverage > 1e-4 && from.0 == to.0
-        })
-        .map(|&((ref_id, from), (_, to), _)| {
-            if let Some(annot) = annotations
-                .get(chrom)
-                .or_else(|| annotations.get(&format!("chr{}", chrom)))
-            {
-                let (from, to) = (from.min(to), from.max(to));
-                let segment_annotations = annot
-                    .find(from as u64..to as u64)
-                    .iter()
-                    .map(|entry| entry.data())
-                    .filter_map(|data| match data.feature_type() {
-                        "gene" => Some((
-                            0,
-                            data.attributes().get("gene_id").cloned(),
-                            data.attributes().get("gene_name").cloned(),
-                        )),
-                        "exon" => Some((
-                            1,
-                            data.attributes().get("gene_id").cloned(),
-                            data.attributes().get("gene_name").cloned(),
-                        )),
-                        _ => None,
-                    })
-                    .fold(
-                        SegmentAnnotation::default(),
-                        |mut acc, (num_exons, gene_id, gene_name)| {
-                            acc.num_exons += num_exons;
-                            acc.gene_ids.extend(gene_id);
-                            acc.gene_names.extend(gene_name);
-                            acc
-                        },
-                    );
-                ((ref_id, from, to), Some(segment_annotations))
+        .map(|&((from_ref_id, from), (to_ref_id, to), edge_info)| {
+            let is_coverage_segment = edge_info.edge_type.contains(Neighbour)
+                && edge_info.coverage > 1e-4
+                && from_ref_id == to_ref_id;
+            if is_coverage_segment {
+                if let Some(annot) = annotations
+                    .get(chrom)
+                    .or_else(|| annotations.get(&format!("chr{}", chrom)))
+                {
+                    let (from, to) = (from.min(to), from.max(to));
+                    let (num_exons, gene_ids, gene_names) = annot
+                        .find(from as u64..to as u64)
+                        .iter()
+                        .map(|entry| entry.data())
+                        .filter_map(|data| match data.feature_type() {
+                            "gene" => Some((
+                                0,
+                                data.attributes().get("gene_id").cloned(),
+                                data.attributes().get("gene_name").cloned(),
+                            )),
+                            "exon" => Some((
+                                1,
+                                data.attributes().get("gene_id").cloned(),
+                                data.attributes().get("gene_name").cloned(),
+                            )),
+                            _ => None,
+                        })
+                        .fold(
+                            (0, vec![], vec![]),
+                            |(mut num_exons, mut gene_ids, mut gene_names),
+                             (n_exons, gene_id, gene_name)| {
+                                num_exons += n_exons;
+                                gene_ids.extend(gene_id);
+                                gene_names.extend(gene_name);
+                                (num_exons, gene_ids, gene_names)
+                            },
+                        );
+                    (
+                        (from_ref_id, from, to_ref_id, to),
+                        Some(SegmentAnnotation::Segment {
+                            num_exons,
+                            gene_ids,
+                            gene_names,
+                            coverage: edge_info.coverage,
+                            num_split_reads: edge_info.num_split_reads,
+                        }),
+                    )
+                } else {
+                    ((from_ref_id, from, to_ref_id, to), None)
+                }
             } else {
-                ((ref_id, from, to), None)
+                // not a coverage segment but a split junction
+                if edge_info.edge_type.contains(Split) {
+                    (
+                        (from_ref_id, from, to_ref_id, to),
+                        Some(SegmentAnnotation::Junction {
+                            num_split_reads: edge_info.num_split_reads,
+                        }),
+                    )
+                } else {
+                    ((from_ref_id, from, to_ref_id, to), None)
+                }
             }
         })
         .collect_vec()
@@ -367,11 +449,18 @@ struct CircleInfo {
     score: usize,
 }
 
-#[derive(Debug, Default)]
-struct SegmentAnnotation {
-    num_exons: usize,
-    gene_ids: Vec<String>,
-    gene_names: Vec<String>,
+#[derive(Debug)]
+enum SegmentAnnotation {
+    Segment {
+        num_exons: usize,
+        gene_ids: Vec<String>,
+        gene_names: Vec<String>,
+        num_split_reads: usize,
+        coverage: f64,
+    },
+    Junction {
+        num_split_reads: usize,
+    },
 }
 
 #[derive(Serialize, Debug, Default)]
@@ -400,4 +489,5 @@ struct FlatCircleTableInfo {
     num_exons: usize,
     gene_ids: String,
     gene_names: String,
+    num_split_reads: usize,
 }
