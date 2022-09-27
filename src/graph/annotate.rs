@@ -239,23 +239,21 @@ fn circle_table_entry(
     graph_id: EventId,
     circle_id: usize,
     circle: Cycle,
-    records: &Vec<Record>,
+    records: &[Record],
 ) -> (
     EventId,
     usize,
     CircleInfo,
     Vec<(Segment, Option<SegmentAnnotation>)>,
 ) {
-    let segment_annotations = segment_annotation(&annotations, circle, &tid_to_tname);
+    let segment_annotations = segment_annotation(annotations, circle, tid_to_tname);
     let varlociraptor_annotations = varlociraptor_info(records);
-
-    let entry = (
+    (
         graph_id,
         circle_id,
         varlociraptor_annotations,
         segment_annotations,
-    );
-    entry
+    )
 }
 
 fn tid_to_tname(header: &Header) -> HashMap<ReferenceId, String> {
