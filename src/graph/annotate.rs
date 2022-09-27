@@ -9,6 +9,7 @@ use bio::data_structures::interval_tree::ArrayBackedIntervalTree;
 use bio::io::gff;
 use bio::io::gff::GffType::GFF3;
 use clap::Parser;
+use csv::Writer;
 use flate2::bufread::MultiGzDecoder;
 use itertools::Itertools;
 use noodles::bcf::header::StringMap;
@@ -83,12 +84,7 @@ pub(crate) fn main_annotate(args: AnnotateArgs) -> Result<()> {
     let (mut reader, header, string_map) = read_bcf(&args)?;
 
     // FIXME: this assumes that the order of contigs is consistent between the vcf header, the graph, the bam and other files.
-    let tid_to_tname = header
-        .contigs()
-        .into_iter()
-        .enumerate()
-        .map(|(tid, (tname, _))| (tid as ReferenceId, tname.to_owned()))
-        .collect();
+    let tid_to_tname = tid_to_tname(&header);
 
     let event_records = group_event_records(&mut reader, &header, &string_map);
 
@@ -112,26 +108,16 @@ pub(crate) fn main_annotate(args: AnnotateArgs) -> Result<()> {
                 .filter_map(|(circle_id, circle)| {
                     let event_name = format!("graph_{}_circle_{}", graph_id, circle_id);
                     if let Some(records) = event_records.get(&event_name) {
-                        let segment_annotations =
-                            segment_annotation(&annotations, circle, &tid_to_tname);
-                        let varlociraptor_annotations = varlociraptor_info(records);
-
-                        let mut segment_writer =
-                            csv::WriterBuilder::new().delimiter(b'\t').from_writer(
-                                File::create(
-                                    &args
-                                        .segment_tables
-                                        .join(format!("{}_segments.tsv", event_name)),
-                                )
-                                .map(BufWriter::new)
-                                .unwrap(),
-                            );
-                        let entry = (
+                        let entry = circle_table_entry(
+                            &tid_to_tname,
+                            &annotations,
                             graph_id,
                             circle_id,
-                            varlociraptor_annotations,
-                            segment_annotations,
+                            circle,
+                            records,
                         );
+                        let mut segment_writer = segment_table_writer(&args, &event_name)
+                            .unwrap_or_else(|_| panic!("Failed creating file for {}", &event_name));
                         write_segment_table_into(&mut segment_writer, &entry, &tid_to_tname)
                             .unwrap();
                         Some(entry)
@@ -146,45 +132,21 @@ pub(crate) fn main_annotate(args: AnnotateArgs) -> Result<()> {
     let circle_table = circle_table
         .into_iter()
         .map(|(graph_id, circle_id, circle_info, segment_annotations)| {
-            let (num_exons, gene_ids, gene_names, num_split_reads) =
-                segment_annotations.iter().fold(
-                    (0, vec![], vec![], 0),
-                    |(mut n_ex, mut gids, mut gnames, mut n_splits), (_, sa)| {
-                        if let Some(sa) = sa {
-                            match sa {
-                                SegmentAnnotation::Segment {
-                                    num_exons,
-                                    gene_ids,
-                                    gene_names,
-                                    num_split_reads,
-                                    coverage: _,
-                                } => {
-                                    n_ex += num_exons;
-                                    gids.extend(gene_ids);
-                                    gnames.extend(gene_names);
-                                    n_splits += if circle_info.segment_count == 1 {
-                                        // if there's only one segment, the split reads loop from one end of the segment to its other end
-                                        *num_split_reads
-                                    } else {
-                                        // otherwise, split reads are described by junction edges and counted below
-                                        0
-                                    };
-                                }
-                                SegmentAnnotation::Junction { num_split_reads } => {
-                                    n_splits += num_split_reads;
-                                }
-                            }
-                        }
-                        (n_ex, gids, gnames, n_splits)
-                    },
-                );
+            let (num_exons, gene_ids, gene_names, num_split_reads, regions) =
+                collapse_segment_annotations(&tid_to_tname, circle_info, &segment_annotations);
             let gene_ids = gene_ids.into_iter().unique().join(",");
             let gene_names = gene_names.into_iter().unique().join(",");
+            let regions = if circle_info.segment_count == 1 {
+                regions.get(0).cloned().unwrap_or_default()
+            } else {
+                regions.join(",")
+            };
             FlatCircleTableInfo {
                 graph_id,
                 circle_id,
                 circle_length: circle_info.length,
                 segment_count: circle_info.segment_count,
+                regions,
                 score: circle_info.score,
                 num_split_reads,
                 num_exons,
@@ -212,6 +174,98 @@ pub(crate) fn main_annotate(args: AnnotateArgs) -> Result<()> {
         &circle_table,
     )?;
     Ok(())
+}
+
+fn collapse_segment_annotations(
+    tid_to_tname: &HashMap<ReferenceId, String>,
+    circle_info: CircleInfo,
+    segment_annotations: &[(Segment, Option<SegmentAnnotation>)],
+) -> (usize, Vec<String>, Vec<String>, usize, Vec<String>) {
+    let (num_exons, gene_ids, gene_names, num_split_reads, regions) =
+        segment_annotations.iter().fold(
+            (0, vec![], vec![], 0, vec![]),
+            |(mut n_ex, mut gids, mut gnames, mut n_splits, mut regions), (segment, sa)| {
+                if let Some(sa) = sa {
+                    match sa {
+                        SegmentAnnotation::Segment {
+                            num_exons,
+                            gene_ids,
+                            gene_names,
+                            num_split_reads,
+                            coverage: _,
+                        } => {
+                            n_ex += num_exons;
+                            gids.extend(gene_ids.clone());
+                            gnames.extend(gene_names.clone());
+                            n_splits += if circle_info.segment_count == 1 {
+                                // if there's only one segment, the split reads loop from one end of the segment to its other end
+                                *num_split_reads
+                            } else {
+                                // otherwise, split reads are described by junction edges and counted below
+                                0
+                            };
+                            let (tid_from, from, tid_to, to) = segment;
+                            assert_eq!(tid_from, tid_to);
+                            regions.push(format!("{}:{}-{}", tid_to_tname[tid_from], from, to));
+                        }
+                        SegmentAnnotation::Junction { num_split_reads } => {
+                            n_splits += num_split_reads;
+                        }
+                    }
+                }
+                (n_ex, gids, gnames, n_splits, regions)
+            },
+        );
+    (num_exons, gene_ids, gene_names, num_split_reads, regions)
+}
+
+fn segment_table_writer(
+    args: &AnnotateArgs,
+    event_name: &String,
+) -> Result<Writer<BufWriter<File>>> {
+    Ok(csv::WriterBuilder::new().delimiter(b'\t').from_writer(
+        File::create(
+            &args
+                .segment_tables
+                .join(format!("{}_segments.tsv", event_name)),
+        )
+        .map(BufWriter::new)?,
+    ))
+}
+
+fn circle_table_entry(
+    tid_to_tname: &HashMap<ReferenceId, String>,
+    annotations: &Annotation,
+    graph_id: EventId,
+    circle_id: usize,
+    circle: Cycle,
+    records: &Vec<Record>,
+) -> (
+    EventId,
+    usize,
+    CircleInfo,
+    Vec<(Segment, Option<SegmentAnnotation>)>,
+) {
+    let segment_annotations = segment_annotation(&annotations, circle, &tid_to_tname);
+    let varlociraptor_annotations = varlociraptor_info(records);
+
+    let entry = (
+        graph_id,
+        circle_id,
+        varlociraptor_annotations,
+        segment_annotations,
+    );
+    entry
+}
+
+fn tid_to_tname(header: &Header) -> HashMap<ReferenceId, String> {
+    let tid_to_tname = header
+        .contigs()
+        .into_iter()
+        .enumerate()
+        .map(|(tid, (tname, _))| (tid as ReferenceId, tname.to_owned()))
+        .collect();
+    tid_to_tname
 }
 
 type Segment = (ReferenceId, Position, ReferenceId, Position);
@@ -544,6 +598,7 @@ struct FlatCircleTableInfo {
     circle_id: usize,
     circle_length: usize,
     segment_count: usize,
+    regions: String,
     score: usize,
     num_exons: usize,
     gene_ids: String,
