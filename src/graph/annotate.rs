@@ -419,10 +419,37 @@ fn varlociraptor_info(records: &[Record]) -> CircleInfo {
         })
         .expect("'Support' info field not found");
 
+    let [prob_present, prob_absent, prob_artifact] = [
+        ("PROB_PRESENT", "PROB_PRESENT".parse::<Key>().unwrap()),
+        ("PROB_ABSENT", "PROB_ABSENT".parse::<Key>().unwrap()),
+        ("PROB_ARTIFACT", "PROB_ARTIFACT".parse::<Key>().unwrap()),
+    ]
+    .map(move |(name, key)| {
+        r.info()
+            .get(&key)
+            .map(|f| match f.value() {
+                Value::Float(f) => *f,
+                _ => panic!("Expected float value for {}", name),
+            })
+            .unwrap_or_else(|| panic!("'{}' info field not found", name))
+    });
+    let af_key = "AF".parse::<vcf::record::genotype::field::Key>().unwrap();
+    let allele_frequencies = r
+        .genotypes()
+        .iter()
+        .map(|f| f[&af_key].value())
+        .collect_vec();
     CircleInfo {
         length,
         segment_count,
         score,
+        prob_present,
+        prob_absent,
+        prob_artifact,
+        af_nanopore: allele_frequencies[0].map(|v| match v {
+            vcf::record::genotype::field::Value::Float(f) => *f,
+            _ => panic!("Expected float value for AF"),
+        }),
     }
 }
 
@@ -469,6 +496,10 @@ struct CircleInfo {
     length: usize,
     segment_count: usize,
     score: usize,
+    prob_present: f32,
+    prob_absent: f32,
+    prob_artifact: f32,
+    af_nanopore: Option<f32>,
 }
 
 #[derive(Debug)]
@@ -512,4 +543,8 @@ struct FlatCircleTableInfo {
     gene_ids: String,
     gene_names: String,
     num_split_reads: usize,
+    prob_present: f32,
+    prob_absent: f32,
+    prob_artifact: f32,
+    af_nanopore: Option<f32>,
 }
