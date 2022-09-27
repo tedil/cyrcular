@@ -154,6 +154,7 @@ pub(crate) fn main_annotate(args: AnnotateArgs) -> Result<()> {
                 regions.join(",")
             };
             FlatCircleTableInfo {
+                event_id: format!("{}-{}", graph_id, circle_id),
                 graph_id,
                 circle_id,
                 circle_length: circle_info.length,
@@ -685,6 +686,7 @@ struct CircleAnnotation {
 // }
 #[derive(Serialize, Debug)]
 struct FlatCircleTableInfo {
+    event_id: String,
     graph_id: usize,
     circle_id: usize,
     circle_length: usize,
