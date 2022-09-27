@@ -327,9 +327,9 @@ fn segment_annotation(
                     .get(chrom)
                     .or_else(|| annotations.get(&format!("chr{}", chrom)))
                 {
-                    let (from, to) = (from.min(to), from.max(to));
+                    let (from2, to2) = (from.min(to), from.max(to));
                     let (num_exons, gene_ids, gene_names) = annot
-                        .find(from as u64..to as u64)
+                        .find(from2 as u64..to2 as u64)
                         .iter()
                         .map(|entry| entry.data())
                         .filter_map(|data| match data.feature_type() {
