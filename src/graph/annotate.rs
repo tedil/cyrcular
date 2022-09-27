@@ -9,7 +9,6 @@ use bio::data_structures::interval_tree::ArrayBackedIntervalTree;
 use bio::io::gff;
 use bio::io::gff::GffType::GFF3;
 use clap::Parser;
-use csv;
 use flate2::bufread::MultiGzDecoder;
 use itertools::Itertools;
 use noodles::bcf::header::StringMap;
@@ -219,6 +218,7 @@ fn collapse_segment_annotations(
                             gene_names,
                             num_split_reads,
                             coverage: _,
+                            breakpoint_sequence: _,
                         } => {
                             n_ex += num_exons;
                             gids.extend(gene_ids.clone());
@@ -363,6 +363,7 @@ fn write_segment_table_into<W: Write>(
                     gene_names,
                     num_split_reads,
                     coverage,
+                    breakpoint_sequence,
                 } => (
                     Some("coverage".to_string()),
                     Some(*num_exons),
@@ -370,7 +371,7 @@ fn write_segment_table_into<W: Write>(
                     Some(gene_ids.join(",")),
                     Some(*num_split_reads),
                     Some(*coverage),
-                    None,
+                    breakpoint_sequence.clone(),
                 ),
                 SegmentAnnotation::Junction {
                     num_split_reads,
@@ -469,6 +470,17 @@ fn segment_annotation(
                                 (num_exons, gene_ids, gene_names)
                             },
                         );
+                    let breakpoint_sequence = (to < from).then(|| {
+                        breakpoint_sequence(
+                            reference,
+                            breakpoint_sequence_length,
+                            from_ref_id,
+                            from,
+                            to_ref_id,
+                            to,
+                        )
+                        .unwrap()
+                    });
                     (
                         (from_ref_id, from, to_ref_id, to),
                         Some(SegmentAnnotation::Segment {
@@ -477,6 +489,7 @@ fn segment_annotation(
                             gene_names,
                             coverage: edge_info.coverage,
                             num_split_reads: edge_info.num_split_reads,
+                            breakpoint_sequence,
                         }),
                     )
                 } else {
@@ -646,6 +659,7 @@ enum SegmentAnnotation {
         gene_names: Vec<String>,
         num_split_reads: usize,
         coverage: f64,
+        breakpoint_sequence: Option<String>,
     },
     Junction {
         num_split_reads: usize,
