@@ -28,10 +28,10 @@ use serde::{Deserialize, Serialize};
 use crate::common::{read_depths, ReadDepth, ReferenceId, SplitReadInfo};
 use crate::util::{default_filter, split_reads};
 
+mod annotate;
 mod breakends;
 pub(crate) mod cli;
 mod plot;
-mod annotate;
 
 type Position = u32;
 type Breakpoint = (ReferenceId, Position);
@@ -367,7 +367,6 @@ fn breakend_event<R: Read + Seek>(
     use noodles::vcf::record::info::field::*;
     use noodles::vcf::record::info::Field;
     use noodles::vcf::record::*;
-    use std::convert::TryFrom;
 
     let mut ref_base_at = |ref_name: &str, idx: u64| -> char {
         reference
