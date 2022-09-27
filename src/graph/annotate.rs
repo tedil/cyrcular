@@ -199,8 +199,9 @@ pub(crate) fn main_annotate(args: AnnotateArgs) -> Result<()> {
         .sorted_unstable_by_key(|table_entry| {
             (
                 OrderedFloat(1. - table_entry.prob_present),
-                OrderedFloat(table_entry.prob_absent),
+                -(table_entry.num_exons as i64),
                 -(table_entry.score as i64),
+                OrderedFloat(table_entry.prob_absent),
                 table_entry.graph_id,
                 table_entry.circle_id,
             )
