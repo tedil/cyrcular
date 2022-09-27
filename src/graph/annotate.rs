@@ -82,8 +82,15 @@ pub(crate) fn main_annotate(args: AnnotateArgs) -> Result<()> {
     eprintln!("Reading breakend records");
     let (mut reader, header, string_map) = read_bcf(&args)?;
 
-    let event_key: Key = "EVENT".parse()?;
-    let event_records = group_event_records(&mut reader, &header, &string_map, &event_key);
+    // FIXME: this assumes that the order of contigs is consistent between the vcf header, the graph, the bam and other files.
+    let tid_to_tname = header
+        .contigs()
+        .into_iter()
+        .enumerate()
+        .map(|(tid, (tname, _))| (tid as ReferenceId, tname.to_owned()))
+        .collect();
+
+    let event_records = group_event_records(&mut reader, &header, &string_map);
 
     eprintln!("Reading annotation");
     let annotations = read_gff3(&args.annotation, |record| {
@@ -105,9 +112,8 @@ pub(crate) fn main_annotate(args: AnnotateArgs) -> Result<()> {
                 .filter_map(|(circle_id, circle)| {
                     let event_name = format!("graph_{}_circle_{}", graph_id, circle_id);
                     if let Some(records) = event_records.get(&event_name) {
-                        let chrom = format!("{}", records[0].chromosome());
-                        let chrom = chrom.strip_prefix("chr").unwrap_or(&chrom);
-                        let segment_annotations = segment_annotation(&annotations, circle, chrom);
+                        let segment_annotations =
+                            segment_annotation(&annotations, circle, &tid_to_tname);
                         let varlociraptor_annotations = varlociraptor_info(records);
 
                         let mut segment_writer =
@@ -126,7 +132,8 @@ pub(crate) fn main_annotate(args: AnnotateArgs) -> Result<()> {
                             varlociraptor_annotations,
                             segment_annotations,
                         );
-                        write_segment_table_into(&mut segment_writer, &entry).unwrap();
+                        write_segment_table_into(&mut segment_writer, &entry, &tid_to_tname)
+                            .unwrap();
                         Some(entry)
                     } else {
                         eprintln!("WARNING: Event {} not found in breakend VCF", event_name);
@@ -227,6 +234,7 @@ fn write_circle_table<W: Write>(writer: W, circle_table: &[FlatCircleTableInfo])
 fn write_segment_table_into<W: Write>(
     writer: &mut csv::Writer<W>,
     circle_entry: &CircleTableEntry,
+    tid_to_tname: &HashMap<ReferenceId, String>,
 ) -> Result<()> {
     let (graph_id, circle_id, circle_info, segment_annotations) = circle_entry;
     #[derive(Serialize, Debug)]
@@ -290,9 +298,9 @@ fn write_segment_table_into<W: Write>(
             segment_count: circle_info.segment_count,
             score: circle_info.score,
             kind: segment_type,
-            target_from: format!("todo: {}", from_ref_id),
+            target_from: tid_to_tname[&from_ref_id].clone(),
             from: *from,
-            target_to: format!("todo: {}", to_ref_id),
+            target_to: tid_to_tname[&to_ref_id].clone(),
             to: *to,
             length: if is_coverage_segment {
                 Some(from.abs_diff(*to))
@@ -313,7 +321,7 @@ fn write_segment_table_into<W: Write>(
 fn segment_annotation(
     annotations: &Annotation,
     circle: Cycle,
-    chrom: &str,
+    tid_to_tname: &HashMap<ReferenceId, String>,
 ) -> Vec<(Segment, Option<SegmentAnnotation>)> {
     circle
         .edges
@@ -323,6 +331,7 @@ fn segment_annotation(
                 && edge_info.coverage > 1e-4
                 && from_ref_id == to_ref_id;
             if is_coverage_segment {
+                let chrom = &tid_to_tname[&from_ref_id];
                 if let Some(annot) = annotations
                     .get(chrom)
                     .or_else(|| annotations.get(&format!("chr{}", chrom)))
@@ -468,20 +477,16 @@ fn group_event_records(
     reader: &mut Reader<BufReader<File>>,
     header: &Header,
     string_map: &StringMap,
-    event_key: &Key,
 ) -> HashMap<String, Vec<Record>> {
+    let event_key: Key = "EVENT".parse().unwrap(); // guaranteed to exist
     let event_records = reader
         .records()
         .flatten()
-        // .map(|r| {
-        //     r.try_into_vcf_record(header, string_map)
-        //         .unwrap_or_else(|_| panic!("{:?}:{:?}", &r.chromosome_id(), &r.position()))
-        // })
         .flat_map(|r| r.try_into_vcf_record(header, string_map))
         .map(|r| {
             (
                 r.info()
-                    .get(event_key)
+                    .get(&event_key)
                     .map(|v| v.value().to_string())
                     .unwrap_or_else(|| "UNKNOWN_EVENT".to_string()),
                 r,
