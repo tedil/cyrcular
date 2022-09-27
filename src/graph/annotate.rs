@@ -9,7 +9,7 @@ use bio::data_structures::interval_tree::ArrayBackedIntervalTree;
 use bio::io::gff;
 use bio::io::gff::GffType::GFF3;
 use clap::Parser;
-use csv::Writer;
+use csv;
 use flate2::bufread::MultiGzDecoder;
 use itertools::Itertools;
 use noodles::bcf::header::StringMap;
@@ -35,6 +35,10 @@ pub(crate) struct AnnotateArgs {
     #[clap(parse(from_os_str))]
     breakend_vcf: PathBuf,
 
+    /// Reference FASTA file
+    #[clap(long, parse(from_os_str))]
+    reference: PathBuf,
+
     /// (b)gzipped GFF3 file containing annotations with respect to the reference sequence
     #[clap(long, parse(from_os_str))]
     annotation: PathBuf,
@@ -46,6 +50,10 @@ pub(crate) struct AnnotateArgs {
     /// Output directory for detailed per-segment information for each circle
     #[clap(long, parse(from_os_str))]
     segment_tables: PathBuf,
+
+    /// Length of the sequence flanking the breakpoint
+    #[clap(long, default_value = "2000")]
+    breakpoint_sequence_length: u32,
 }
 
 type Annotation = HashMap<String, ArrayBackedIntervalTree<u64, gff::Record>>;
@@ -83,6 +91,9 @@ pub(crate) fn main_annotate(args: AnnotateArgs) -> Result<()> {
     eprintln!("Reading breakend records");
     let (mut reader, header, string_map) = read_bcf(&args)?;
 
+    eprintln!("Reading reference");
+    let reference = read_reference(&args.reference)?;
+
     // FIXME: this assumes that the order of contigs is consistent between the vcf header, the graph, the bam and other files.
     let tid_to_tname = tid_to_tname(&header);
 
@@ -111,10 +122,12 @@ pub(crate) fn main_annotate(args: AnnotateArgs) -> Result<()> {
                         let entry = circle_table_entry(
                             &tid_to_tname,
                             &annotations,
+                            &reference,
                             graph_id,
                             circle_id,
                             circle,
                             records,
+                            args.breakpoint_sequence_length,
                         );
                         let mut segment_writer = segment_table_writer(&args, &event_name)
                             .unwrap_or_else(|_| panic!("Failed creating file for {}", &event_name));
@@ -176,6 +189,19 @@ pub(crate) fn main_annotate(args: AnnotateArgs) -> Result<()> {
     Ok(())
 }
 
+fn read_reference<P: AsRef<Path> + std::fmt::Debug>(
+    path: P,
+) -> Result<HashMap<ReferenceId, Vec<u8>>> {
+    bio::io::fasta::Reader::from_file(path)?
+        .records()
+        .enumerate()
+        .map(|(i, r)| {
+            r.map(|r| (i as u32, r.seq().to_vec()))
+                .map_err(|e| e.into())
+        })
+        .collect()
+}
+
 fn collapse_segment_annotations(
     tid_to_tname: &HashMap<ReferenceId, String>,
     circle_info: CircleInfo,
@@ -208,7 +234,9 @@ fn collapse_segment_annotations(
                             assert_eq!(tid_from, tid_to);
                             regions.push(format!("{}:{}-{}", tid_to_tname[tid_from], from, to));
                         }
-                        SegmentAnnotation::Junction { num_split_reads } => {
+                        SegmentAnnotation::Junction {
+                            num_split_reads, ..
+                        } => {
                             n_splits += num_split_reads;
                         }
                     }
@@ -222,7 +250,7 @@ fn collapse_segment_annotations(
 fn segment_table_writer(
     args: &AnnotateArgs,
     event_name: &String,
-) -> Result<Writer<BufWriter<File>>> {
+) -> Result<csv::Writer<BufWriter<File>>> {
     Ok(csv::WriterBuilder::new().delimiter(b'\t').from_writer(
         File::create(
             &args
@@ -236,17 +264,25 @@ fn segment_table_writer(
 fn circle_table_entry(
     tid_to_tname: &HashMap<ReferenceId, String>,
     annotations: &Annotation,
+    reference: &HashMap<ReferenceId, Vec<u8>>,
     graph_id: EventId,
     circle_id: usize,
     circle: Cycle,
     records: &[Record],
+    breakpoint_sequence_length: u32,
 ) -> (
     EventId,
     usize,
     CircleInfo,
     Vec<(Segment, Option<SegmentAnnotation>)>,
 ) {
-    let segment_annotations = segment_annotation(annotations, circle, tid_to_tname);
+    let segment_annotations = segment_annotation(
+        annotations,
+        reference,
+        circle,
+        tid_to_tname,
+        breakpoint_sequence_length,
+    );
     let varlociraptor_annotations = varlociraptor_info(records);
     (
         graph_id,
@@ -308,37 +344,50 @@ fn write_segment_table_into<W: Write>(
         gene_names: Option<String>,
         coverage: Option<f64>,
         num_split_reads: Option<usize>,
+        breakpoint_sequence: Option<String>,
     }
     for ((from_ref_id, from, to_ref_id, to), annotation) in segment_annotations {
-        let (segment_type, num_exons, gene_names, gene_ids, num_split_reads, coverage) =
-            if let Some(annotation) = annotation.as_ref() {
-                match annotation {
-                    SegmentAnnotation::Segment {
-                        num_exons,
-                        gene_ids,
-                        gene_names,
-                        num_split_reads,
-                        coverage,
-                    } => (
-                        Some("coverage".to_string()),
-                        Some(*num_exons),
-                        Some(gene_names.join(",")),
-                        Some(gene_ids.join(",")),
-                        Some(*num_split_reads),
-                        Some(*coverage),
-                    ),
-                    SegmentAnnotation::Junction { num_split_reads } => (
-                        Some("split".to_string()),
-                        None,
-                        None,
-                        None,
-                        Some(*num_split_reads),
-                        None,
-                    ),
-                }
-            } else {
-                (None, None, None, None, None, None)
-            };
+        let (
+            segment_type,
+            num_exons,
+            gene_names,
+            gene_ids,
+            num_split_reads,
+            coverage,
+            breakpoint_sequence,
+        ) = if let Some(annotation) = annotation.as_ref() {
+            match annotation {
+                SegmentAnnotation::Segment {
+                    num_exons,
+                    gene_ids,
+                    gene_names,
+                    num_split_reads,
+                    coverage,
+                } => (
+                    Some("coverage".to_string()),
+                    Some(*num_exons),
+                    Some(gene_names.join(",")),
+                    Some(gene_ids.join(",")),
+                    Some(*num_split_reads),
+                    Some(*coverage),
+                    None,
+                ),
+                SegmentAnnotation::Junction {
+                    num_split_reads,
+                    breakpoint_sequence,
+                } => (
+                    Some("split".to_string()),
+                    None,
+                    None,
+                    None,
+                    Some(*num_split_reads),
+                    None,
+                    Some(breakpoint_sequence.clone()),
+                ),
+            }
+        } else {
+            (None, None, None, None, None, None, None)
+        };
         let is_coverage_segment = if let Some(k) = segment_type.as_ref() {
             k == "coverage"
         } else {
@@ -351,9 +400,9 @@ fn write_segment_table_into<W: Write>(
             segment_count: circle_info.segment_count,
             score: circle_info.score,
             kind: segment_type,
-            target_from: tid_to_tname[&from_ref_id].clone(),
+            target_from: tid_to_tname[from_ref_id].clone(),
             from: *from,
-            target_to: tid_to_tname[&to_ref_id].clone(),
+            target_to: tid_to_tname[to_ref_id].clone(),
             to: *to,
             length: if is_coverage_segment {
                 Some(from.abs_diff(*to))
@@ -365,6 +414,7 @@ fn write_segment_table_into<W: Write>(
             gene_names,
             coverage,
             num_split_reads,
+            breakpoint_sequence,
         };
         writer.serialize(entry)?;
     }
@@ -373,8 +423,10 @@ fn write_segment_table_into<W: Write>(
 
 fn segment_annotation(
     annotations: &Annotation,
+    reference: &HashMap<ReferenceId, Vec<u8>>,
     circle: Cycle,
     tid_to_tname: &HashMap<ReferenceId, String>,
+    breakpoint_sequence_length: u32,
 ) -> Vec<(Segment, Option<SegmentAnnotation>)> {
     circle
         .edges
@@ -433,12 +485,20 @@ fn segment_annotation(
             } else {
                 // not a coverage segment but a split junction
                 if edge_info.edge_type.contains(Split) {
-                    (
-                        (from_ref_id, from, to_ref_id, to),
-                        Some(SegmentAnnotation::Junction {
-                            num_split_reads: edge_info.num_split_reads,
-                        }),
+                    let breakpoint_sequence = breakpoint_sequence(
+                        reference,
+                        breakpoint_sequence_length,
+                        from_ref_id,
+                        from,
+                        to_ref_id,
+                        to,
                     )
+                    .unwrap();
+                    let annot = SegmentAnnotation::Junction {
+                        num_split_reads: edge_info.num_split_reads,
+                        breakpoint_sequence,
+                    };
+                    ((from_ref_id, from, to_ref_id, to), Some(annot))
                 } else {
                     ((from_ref_id, from, to_ref_id, to), None)
                 }
@@ -448,6 +508,24 @@ fn segment_annotation(
             (*from_ref_id, *from, *to_ref_id, *to)
         })
         .collect_vec()
+}
+
+fn breakpoint_sequence(
+    reference: &HashMap<ReferenceId, Vec<u8>>,
+    breakpoint_sequence_length: u32,
+    from_ref_id: ReferenceId,
+    from: Position,
+    to_ref_id: ReferenceId,
+    to: Position,
+) -> Result<String> {
+    let breakpoint_sequence_length = breakpoint_sequence_length / 2;
+    let from_seq = reference[&from_ref_id].as_slice();
+    let seq1 = &from_seq[from.saturating_sub(breakpoint_sequence_length) as usize..from as usize];
+    let to_seq = reference[&to_ref_id].as_slice();
+    let to_len = to_seq.len();
+    let seq2 = &to_seq
+        [to as usize..((to.saturating_add(breakpoint_sequence_length)) as usize).min(to_len)];
+    Ok(String::from_utf8([seq1, seq2].concat())?)
 }
 
 fn varlociraptor_info(records: &[Record]) -> CircleInfo {
@@ -571,6 +649,7 @@ enum SegmentAnnotation {
     },
     Junction {
         num_split_reads: usize,
+        breakpoint_sequence: String,
     },
 }
 
