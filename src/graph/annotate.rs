@@ -16,6 +16,7 @@ use noodles::bcf::Reader;
 use noodles::vcf::record::info::field::{Key, Value};
 use noodles::vcf::{Header, Record};
 use noodles::{bcf, vcf};
+use ordered_float::OrderedFloat;
 use serde::Serialize;
 
 use crate::cli::{CircleId, EventId, GraphStorage};
@@ -133,9 +134,71 @@ pub(crate) fn main_annotate(args: AnnotateArgs) -> Result<()> {
                     }
                 })
                 .collect_vec()
+        });
+
+    let circle_table = circle_table
+        .into_iter()
+        .map(|(graph_id, circle_id, circle_info, segment_annotations)| {
+            let (num_exons, gene_ids, gene_names, num_split_reads) =
+                segment_annotations.iter().fold(
+                    (0, vec![], vec![], 0),
+                    |(mut n_ex, mut gids, mut gnames, mut n_splits), (_, sa)| {
+                        if let Some(sa) = sa {
+                            match sa {
+                                SegmentAnnotation::Segment {
+                                    num_exons,
+                                    gene_ids,
+                                    gene_names,
+                                    num_split_reads,
+                                    coverage: _,
+                                } => {
+                                    n_ex += num_exons;
+                                    gids.extend(gene_ids);
+                                    gnames.extend(gene_names);
+                                    n_splits += if circle_info.segment_count == 1 {
+                                        // if there's only one segment, the split reads loop from one end of the segment to its other end
+                                        *num_split_reads
+                                    } else {
+                                        // otherwise, split reads are described by junction edges and counted below
+                                        0
+                                    };
+                                }
+                                SegmentAnnotation::Junction { num_split_reads } => {
+                                    n_splits += num_split_reads;
+                                }
+                            }
+                        }
+                        (n_ex, gids, gnames, n_splits)
+                    },
+                );
+            let gene_ids = gene_ids.into_iter().unique().join(",");
+            let gene_names = gene_names.into_iter().unique().join(",");
+            FlatCircleTableInfo {
+                graph_id,
+                circle_id,
+                circle_length: circle_info.length,
+                segment_count: circle_info.segment_count,
+                score: circle_info.score,
+                num_split_reads,
+                num_exons,
+                gene_ids,
+                gene_names,
+                prob_present: circle_info.prob_present,
+                prob_absent: circle_info.prob_absent,
+                prob_artifact: circle_info.prob_artifact,
+                af_nanopore: circle_info.af_nanopore,
+            }
+        })
+        .sorted_unstable_by_key(|table_entry| {
+            (
+                OrderedFloat(1. - table_entry.prob_present),
+                OrderedFloat(table_entry.prob_absent),
+                -(table_entry.score as i64),
+                table_entry.graph_id,
+                table_entry.circle_id,
+            )
         })
         .collect_vec();
-
     write_circle_table(
         File::create(&args.circle_table).map(BufWriter::new)?,
         &circle_table,
@@ -151,56 +214,12 @@ type CircleTableEntry = (
     Vec<(Segment, Option<SegmentAnnotation>)>,
 );
 
-fn write_circle_table<W: Write>(writer: W, circle_table: &[CircleTableEntry]) -> Result<()> {
+fn write_circle_table<W: Write>(writer: W, circle_table: &[FlatCircleTableInfo]) -> Result<()> {
     let mut writer: csv::Writer<_> = csv::WriterBuilder::new()
         .delimiter(b'\t')
         .from_writer(writer);
-    for (graph_id, circle_id, circle_info, segment_annotations) in circle_table {
-        let (num_exons, gene_ids, gene_names, num_split_reads) = segment_annotations.iter().fold(
-            (0, vec![], vec![], 0),
-            |(mut n_ex, mut gids, mut gnames, mut n_splits), (_, sa)| {
-                if let Some(sa) = sa {
-                    match sa {
-                        SegmentAnnotation::Segment {
-                            num_exons,
-                            gene_ids,
-                            gene_names,
-                            num_split_reads,
-                            coverage: _,
-                        } => {
-                            n_ex += num_exons;
-                            gids.extend(gene_ids);
-                            gnames.extend(gene_names);
-                            n_splits += if circle_info.segment_count == 1 {
-                                // if there's only one segment, the split reads loop from one end of the segment to its other end
-                                *num_split_reads
-                            } else {
-                                // otherwise, split reads are described by junction edges and counted below
-                                0
-                            };
-                        }
-                        SegmentAnnotation::Junction { num_split_reads } => {
-                            n_splits += num_split_reads;
-                        }
-                    }
-                }
-                (n_ex, gids, gnames, n_splits)
-            },
-        );
-        let gene_ids = gene_ids.into_iter().unique().join(",");
-        let gene_names = gene_names.into_iter().unique().join(",");
-        let cti = FlatCircleTableInfo {
-            graph_id: *graph_id,
-            circle_id: *circle_id,
-            circle_length: circle_info.length,
-            segment_count: circle_info.segment_count,
-            score: circle_info.score,
-            num_split_reads,
-            num_exons,
-            gene_ids,
-            gene_names,
-        };
-        writer.serialize(cti)?;
+    for entry in circle_table {
+        writer.serialize(entry)?;
     }
     Ok(())
 }
@@ -362,6 +381,9 @@ fn segment_annotation(
                     ((from_ref_id, from, to_ref_id, to), None)
                 }
             }
+        })
+        .sorted_unstable_by_key(|((from_ref_id, from, to_ref_id, to), _)| {
+            (*from_ref_id, *from, *to_ref_id, *to)
         })
         .collect_vec()
 }
