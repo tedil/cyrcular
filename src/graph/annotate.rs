@@ -11,9 +11,11 @@ use bio::io::gff::GffType::GFF3;
 use clap::Parser;
 use flate2::bufread::MultiGzDecoder;
 use itertools::Itertools;
-use noodles::bcf::header::StringMap;
+use noodles::bcf::header::StringMaps;
 use noodles::bcf::Reader;
-use noodles::vcf::record::info::field::{Key, Value};
+use noodles::bgzf::reader::Reader as BgzfReader;
+use noodles::vcf::header::info::Key;
+use noodles::vcf::record::info::field::Value;
 use noodles::vcf::{Header, Record};
 use noodles::{bcf, vcf};
 use ordered_float::OrderedFloat;
@@ -88,15 +90,15 @@ pub(crate) fn main_annotate(args: AnnotateArgs) -> Result<()> {
     let graph = GraphStorage::from_path(&args.graph)?;
 
     eprintln!("Reading breakend records");
-    let (mut reader, header, string_map) = read_bcf(&args)?;
-
-    eprintln!("Reading reference");
-    let reference = read_reference(&args.reference)?;
+    let (mut reader, header, string_maps) = read_bcf(&args)?;
 
     // FIXME: this assumes that the order of contigs is consistent between the vcf header, the graph, the bam and other files.
     let tid_to_tname = tid_to_tname(&header);
 
-    let event_records = group_event_records(&mut reader, &header, &string_map);
+    let event_records = group_event_records(&mut reader, &header, &string_maps);
+
+    eprintln!("Reading reference");
+    let reference = read_reference(&args.reference)?;
 
     eprintln!("Reading annotation");
     let annotations = read_gff3(&args.annotation, |record| {
@@ -298,7 +300,7 @@ fn tid_to_tname(header: &Header) -> HashMap<ReferenceId, String> {
         .contigs()
         .into_iter()
         .enumerate()
-        .map(|(tid, (tname, _))| (tid as ReferenceId, tname.to_owned()))
+        .map(|(tid, (tname, _))| (tid as ReferenceId, tname.as_ref().to_owned()))
         .collect();
     tid_to_tname
 }
@@ -552,7 +554,7 @@ fn varlociraptor_info(records: &[Record]) -> CircleInfo {
         .info()
         .get(&circle_length_key)
         .map(|f| match f.value() {
-            Value::Integer(i) => usize::try_from(*i).expect("Invalid circle length"),
+            Some(Value::Integer(i)) => usize::try_from(*i).expect("Invalid circle length"),
             _ => panic!("Expected integer value for circle length"),
         })
         .expect("'CircleLength' info field not found");
@@ -560,7 +562,7 @@ fn varlociraptor_info(records: &[Record]) -> CircleInfo {
         .info()
         .get(&circle_segment_count_key)
         .map(|f| match f.value() {
-            Value::Integer(i) => usize::try_from(*i).expect("Invalid segment count"),
+            Some(Value::Integer(i)) => usize::try_from(*i).expect("Invalid segment count"),
             _ => panic!("Expected integer value for segment count"),
         })
         .expect("'CircleSegmentCount' info field not found");
@@ -568,7 +570,7 @@ fn varlociraptor_info(records: &[Record]) -> CircleInfo {
         .info()
         .get(&support_key)
         .map(|f| match f.value() {
-            Value::Integer(i) => usize::try_from(*i).expect("Invalid score"),
+            Some(Value::Integer(i)) => usize::try_from(*i).expect("Invalid score"),
             _ => panic!("Expected integer value for score"),
         })
         .expect("'Support' info field not found");
@@ -582,12 +584,12 @@ fn varlociraptor_info(records: &[Record]) -> CircleInfo {
         r.info()
             .get(&key)
             .map(|f| match f.value() {
-                Value::Float(f) => *f,
+                Some(Value::Float(f)) => *f,
                 _ => panic!("Expected float value for {}", name),
             })
             .unwrap_or_else(|| panic!("'{}' info field not found", name))
     });
-    let af_key = "AF".parse::<vcf::record::genotype::field::Key>().unwrap();
+    let af_key = "AF".parse::<vcf::header::format::Key>().unwrap();
     let allele_frequencies = r
         .genotypes()
         .iter()
@@ -606,33 +608,33 @@ fn varlociraptor_info(records: &[Record]) -> CircleInfo {
         }),
     }
 }
-
-fn read_bcf(args: &AnnotateArgs) -> Result<(Reader<BufReader<File>>, Header, StringMap)> {
+type BcfReader = Reader<BgzfReader<BufReader<File>>>;
+fn read_bcf(args: &AnnotateArgs) -> Result<(BcfReader, Header, StringMaps)> {
     let mut reader = File::open(&args.breakend_vcf)
         .map(BufReader::new)
         .map(bcf::Reader::new)?;
     let _ = reader.read_file_format()?;
     let raw_header = reader.read_header()?;
-    let header: vcf::Header = raw_header.parse()?;
-    let string_map = raw_header.parse()?;
-    Ok((reader, header, string_map))
+    let header: Header = raw_header.parse()?;
+    let string_maps = StringMaps::from(&header);
+    Ok((reader, header, string_maps))
 }
 
 fn group_event_records(
-    reader: &mut Reader<BufReader<File>>,
+    reader: &mut BcfReader,
     header: &Header,
-    string_map: &StringMap,
+    string_maps: &StringMaps,
 ) -> HashMap<String, Vec<Record>> {
     let event_key: Key = "EVENT".parse().unwrap(); // guaranteed to exist
     let event_records = reader
         .records()
-        .flatten()
-        .flat_map(|r| r.try_into_vcf_record(header, string_map))
+        .map(|r| r.unwrap())
+        .map(|r| r.try_into_vcf_record(header, string_maps).unwrap())
         .map(|r| {
             (
                 r.info()
                     .get(&event_key)
-                    .map(|v| v.value().to_string())
+                    .map(|v| v.value().expect("empty EVENT?").to_string())
                     .unwrap_or_else(|| "UNKNOWN_EVENT".to_string()),
                 r,
             )
