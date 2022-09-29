@@ -31,6 +31,7 @@ mod annotate;
 mod breakends;
 pub(crate) mod cli;
 mod plot;
+mod table;
 
 type Position = u32;
 type Breakpoint = (ReferenceId, Position);

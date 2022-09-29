@@ -52,130 +52,95 @@ pub(crate) struct AnnotateArgs {
     /// Length of the sequence flanking the breakpoint
     #[clap(long, default_value = "2000")]
     breakpoint_sequence_length: u32,
+
+    #[clap(long)]
+    output: PathBuf,
 }
 
-#[derive(Parser)]
-struct TableArgs {
-    /// Path for the overview circle table
-    #[clap(long, parse(from_os_str))]
-    circle_table: PathBuf,
+pub(crate) fn main_annotate(args: AnnotateArgs) -> Result<()> {
+    eprintln!("Reading graph");
+    let graph = GraphStorage::from_path(&args.graph)?;
 
-    /// Output directory for detailed per-segment information for each circle
-    #[clap(long, parse(from_os_str))]
-    segment_tables: PathBuf,
+    eprintln!("Reading reference");
+    let reference = Reference::from_path(&args.reference)?;
+
+    eprintln!("Reading annotation");
+    let gene_annotations = read_gff3(&args.gene_annotation, |record| {
+        record.feature_type() == "gene" || record.feature_type() == "exon"
+    })?;
+    let regulatory_annotations = read_gff3(&args.regulatory_annotation, |_| true)?;
+    let annotated_graph = annotate_graph(
+        graph,
+        &reference,
+        &gene_annotations,
+        &regulatory_annotations,
+        None,
+        args.breakpoint_sequence_length as usize,
+    );
+    let circle_summaries = annotated_graph.summaries(&reference);
+
+    Ok(())
 }
 
-fn tables_from_annotated_graph() {
-    //
-    // eprintln!("Reading breakend records");
-    // let (mut reader, header, string_maps) = read_bcf(&args)?;
-    // // FIXME: this assumes that the order of contigs is consistent between the vcf header, the graph, the bam and other files.
-    // let tid_to_tname = tid_to_tname(&header);
-    //
-    // let event_records = group_event_records(&mut reader, &header, &string_maps);
-    //
-    // std::fs::create_dir_all(&args.segment_tables)?;
-    // eprintln!("Building circle table");
-    // let circle_table = graph
-    //     .valid_paths
-    //     .into_iter()
-    //     .flat_map(|(graph_id, circles)| {
-    //         circles
-    //             .into_iter()
-    //             .enumerate()
-    //             .filter_map(|(circle_id, circle)| {
-    //                 let event_name = format!("graph_{}_circle_{}", graph_id, circle_id);
-    //                 if let Some(records) = event_records.get(&event_name) {
-    //                     let entry = circle_table_entry(
-    //                         &tid_to_tname,
-    //                         &gene_annotations,
-    //                         &regulatory_annotations,
-    //                         &reference,
-    //                         graph_id,
-    //                         circle_id,
-    //                         circle,
-    //                         records,
-    //                         args.breakpoint_sequence_length,
-    //                     );
-    //                     let mut segment_writer = segment_table_writer(&args, &event_name)
-    //                         .unwrap_or_else(|_| panic!("Failed creating file for {}", &event_name));
-    //                     write_segment_table_into(&mut segment_writer, &entry, &tid_to_tname)
-    //                         .unwrap();
-    //                     Some(entry)
-    //                 } else {
-    //                     eprintln!("WARNING: Event {} not found in breakend VCF", event_name);
-    //                     None
-    //                 }
-    //             })
-    //             .collect_vec()
-    //     });
-    //
-    // let circle_table = circle_table
-    //     .into_iter()
-    //     .map(|(graph_id, circle_id, circle_info, segment_annotations)| {
-    //         let (num_exons, gene_ids, gene_names, num_split_reads, regions, regulatory_features) =
-    //             collapse_segment_annotations(&tid_to_tname, circle_info, &segment_annotations);
-    //         let gene_ids = gene_ids.into_iter().unique().join(",");
-    //         let gene_names = gene_names.into_iter().unique().join(",");
-    //         let regulatory_features = regulatory_features.into_iter().join(",");
-    //         let regions = if circle_info.segment_count == 1 {
-    //             regions.get(0).cloned().unwrap_or_default()
-    //         } else {
-    //             regions.join(",")
-    //         };
-    //         FlatCircleTableInfo {
-    //             event_id: format!("{}-{}", graph_id, circle_id),
-    //             graph_id,
-    //             circle_id,
-    //             circle_length: circle_info.length,
-    //             segment_count: circle_info.segment_count,
-    //             regions,
-    //             score: circle_info.score,
-    //             num_split_reads,
-    //             num_exons,
-    //             gene_ids,
-    //             gene_names,
-    //             regulatory_features,
-    //             prob_present: circle_info.prob_present,
-    //             prob_absent: circle_info.prob_absent,
-    //             prob_artifact: circle_info.prob_artifact,
-    //             af_nanopore: circle_info.af_nanopore,
-    //         }
-    //     })
-    //     .sorted_unstable_by_key(|table_entry| {
-    //         (
-    //             OrderedFloat(1. - table_entry.prob_present),
-    //             -(table_entry.num_exons as i64),
-    //             -(table_entry.score as i64),
-    //             OrderedFloat(table_entry.prob_absent),
-    //             table_entry.graph_id,
-    //             table_entry.circle_id,
-    //         )
-    //     })
-    //     .collect_vec();
-    // write_circle_table(
-    //     File::create(&args.circle_table).map(BufWriter::new)?,
-    //     &circle_table,
-    // )?;
+fn annotate_graph(
+    graph: GraphStorage,
+    reference: &Reference,
+    gene_annotations: &Annotation,
+    regulatory_annotations: &Annotation,
+    event_grouped_records: Option<HashMap<String, Vec<Record>>>,
+    breakpoint_sequence_length: usize,
+) -> AnnotatedGraph {
+    if let Some(event_records) = event_grouped_records {
+        todo!();
+    }
 
-    // let gene_ids = gene_ids.into_iter().unique().join(",");
-    // let gene_names = gene_names.into_iter().unique().join(",");
-    // let regulatory_features = regulatory_features.into_iter().join(",");
-    // let regions = if annotated_circle.annotated_paths.len() <= 2 {
-    //     regions.get(0).cloned().unwrap_or_default()
-    // } else {
-    //     regions.join(",")
-    // };
-
-    // let varlociraptor_annotations = varlociraptor_info(records);
+    eprintln!("Building circle table");
+    let annotated_paths = graph
+        .valid_paths
+        .into_iter()
+        .map(|(graph_id, circles)| {
+            let annotated_circles = circles
+                .into_iter()
+                .map(|circle| {
+                    let circle_id = circle.id;
+                    let segment_annotations = segment_annotation(
+                        gene_annotations,
+                        regulatory_annotations,
+                        reference,
+                        circle,
+                        breakpoint_sequence_length as u32,
+                    );
+                    AnnotatedCircle {
+                        graph_id,
+                        circle_id,
+                        annotated_paths: segment_annotations,
+                    }
+                })
+                .collect_vec();
+            (graph_id, annotated_circles)
+        })
+        .collect_vec();
+    let annotated_graph = AnnotatedGraph { annotated_paths };
+    annotated_graph
 }
 
-type GraphId = usize;
+pub(crate) type GraphId = usize;
 
-struct AnnotatedCircle {
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct AnnotatedCircle {
     graph_id: GraphId,
     circle_id: CircleId,
     annotated_paths: Vec<(Segment, Option<SegmentAnnotation>)>,
+}
+
+impl AnnotatedCircle {
+    pub(crate) fn circle_id(&self) -> CircleId {
+        self.circle_id
+    }
+
+    pub(crate) fn graph_id(&self) -> CircleId {
+        self.graph_id
+    }
 }
 
 impl AnnotatedCircle {
@@ -240,6 +205,10 @@ impl AnnotatedCircle {
             segment_count: 0,
         }
     }
+
+    pub(crate) fn segments(&self) -> impl Iterator<Item = &(Segment, Option<SegmentAnnotation>)> {
+        self.annotated_paths.iter()
+    }
 }
 
 fn event_id(graph_id: GraphId, circle_id: CircleId) -> String {
@@ -270,11 +239,13 @@ impl AnnotatedCircle {
     }
 }
 
-struct AnnotatedGraph {
+use serde::Deserialize;
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct AnnotatedGraph {
     annotated_paths: Vec<(GraphId, Vec<AnnotatedCircle>)>,
 }
 
-struct CircleSummary {
+pub(crate) struct CircleSummary {
     event_id: String,
     graph_id: GraphId,
     circle_id: CircleId,
@@ -300,48 +271,6 @@ impl AnnotatedGraph {
             })
             .collect_vec()
     }
-}
-
-fn annotate_graph(
-    graph: GraphStorage,
-    reference: &Reference,
-    gene_annotations: &Annotation,
-    regulatory_annotations: &Annotation,
-    event_grouped_records: Option<HashMap<String, Vec<Record>>>,
-    breakpoint_sequence_length: usize,
-) -> AnnotatedGraph {
-    if let Some(event_records) = event_grouped_records {
-        todo!();
-    }
-
-    eprintln!("Building circle table");
-    let annotated_paths = graph
-        .valid_paths
-        .into_iter()
-        .map(|(graph_id, circles)| {
-            let annotated_circles = circles
-                .into_iter()
-                .map(|circle| {
-                    let circle_id = circle.id;
-                    let segment_annotations = segment_annotation(
-                        gene_annotations,
-                        regulatory_annotations,
-                        reference,
-                        circle,
-                        breakpoint_sequence_length as u32,
-                    );
-                    AnnotatedCircle {
-                        graph_id,
-                        circle_id,
-                        annotated_paths: segment_annotations,
-                    }
-                })
-                .collect_vec();
-            (graph_id, annotated_circles)
-        })
-        .collect_vec();
-    let annotated_graph = AnnotatedGraph { annotated_paths };
-    annotated_graph
 }
 
 type Annotation = HashMap<String, ArrayBackedIntervalTree<u64, gff::Record>>;
@@ -372,31 +301,7 @@ fn read_gff3<P: AsRef<Path> + std::fmt::Debug>(
     Ok(trees)
 }
 
-pub(crate) fn main_annotate(args: AnnotateArgs) -> Result<()> {
-    eprintln!("Reading graph");
-    let graph = GraphStorage::from_path(&args.graph)?;
-
-    eprintln!("Reading reference");
-    let reference = Reference::from_path(&args.reference)?;
-
-    eprintln!("Reading annotation");
-    let gene_annotations = read_gff3(&args.gene_annotation, |record| {
-        record.feature_type() == "gene" || record.feature_type() == "exon"
-    })?;
-    let regulatory_annotations = read_gff3(&args.regulatory_annotation, |_| true)?;
-    let annotated_graph = annotate_graph(
-        graph,
-        &reference,
-        &gene_annotations,
-        &regulatory_annotations,
-        None,
-        args.breakpoint_sequence_length as usize,
-    );
-    let circle_summaries = annotated_graph.summaries(&reference);
-    Ok(())
-}
-
-struct Reference {
+pub(crate) struct Reference {
     inner: HashMap<ReferenceId, Vec<u8>>,
     tid_to_tname: HashMap<ReferenceId, String>,
     tname_to_tid: HashMap<String, ReferenceId>,
@@ -460,160 +365,11 @@ type NumSplitReads = usize;
 type Regions = Vec<String>;
 type RegulatoryFeatures = HashSet<String>;
 
-fn segment_table_writer(
-    args: &TableArgs,
-    event_name: &String,
-) -> Result<csv::Writer<BufWriter<File>>> {
-    Ok(csv::WriterBuilder::new().delimiter(b'\t').from_writer(
-        File::create(
-            &args
-                .segment_tables
-                .join(format!("{}_segments.tsv", event_name)),
-        )
-        .map(BufWriter::new)?,
-    ))
-}
-
-fn tid_to_tname(header: &Header) -> HashMap<ReferenceId, String> {
-    let tid_to_tname = header
-        .contigs()
-        .into_iter()
-        .enumerate()
-        .map(|(tid, (tname, _))| (tid as ReferenceId, tname.as_ref().to_owned()))
-        .collect();
-    tid_to_tname
-}
-
 type Segment = (ReferenceId, Position, ReferenceId, Position);
 
 fn segment_length(segment: &Segment) -> Option<u32> {
     let (tid_from, from, tid_to, to) = segment;
     (tid_from == tid_to).then(|| to.abs_diff(*from))
-}
-
-type CircleTableEntry = (
-    EventId,
-    CircleId,
-    CircleInfo,
-    Vec<(Segment, Option<SegmentAnnotation>)>,
-);
-
-fn write_circle_table<W: Write>(writer: W, circle_table: &[FlatCircleTableInfo]) -> Result<()> {
-    let mut writer: csv::Writer<_> = csv::WriterBuilder::new()
-        .delimiter(b'\t')
-        .from_writer(writer);
-    for entry in circle_table {
-        writer.serialize(entry)?;
-    }
-    Ok(())
-}
-
-fn write_segment_table_into<W: Write>(
-    writer: &mut csv::Writer<W>,
-    circle_entry: &CircleTableEntry,
-    tid_to_tname: &HashMap<ReferenceId, String>,
-) -> Result<()> {
-    let (graph_id, circle_id, circle_info, segment_annotations) = circle_entry;
-    #[derive(Serialize, Debug)]
-    struct SegmentEntry {
-        graph_id: usize,
-        circle_id: usize,
-        circle_length: usize,
-        segment_count: usize,
-        score: usize,
-        kind: Option<String>,
-        target_from: String,
-        from: Position,
-        target_to: String,
-        to: Position,
-        length: Option<Position>,
-        num_exons: Option<usize>,
-        gene_ids: Option<String>,
-        gene_names: Option<String>,
-        regulatory_features: Option<String>,
-        coverage: Option<f64>,
-        num_split_reads: Option<usize>,
-        breakpoint_sequence: Option<String>,
-    }
-    for ((from_ref_id, from, to_ref_id, to), annotation) in segment_annotations {
-        let (
-            segment_type,
-            num_exons,
-            gene_names,
-            gene_ids,
-            regulatory_features,
-            num_split_reads,
-            coverage,
-            breakpoint_sequence,
-        ) = if let Some(annotation) = annotation.as_ref() {
-            match annotation {
-                SegmentAnnotation::Segment {
-                    num_exons,
-                    gene_ids,
-                    gene_names,
-                    regulatory_features,
-                    num_split_reads,
-                    coverage,
-                    breakpoint_sequence,
-                } => (
-                    Some("coverage".to_string()),
-                    Some(*num_exons),
-                    Some(gene_names.join(",")),
-                    Some(gene_ids.join(",")),
-                    Some(regulatory_features.iter().join(",")),
-                    Some(*num_split_reads),
-                    Some(*coverage),
-                    breakpoint_sequence.clone(),
-                ),
-                SegmentAnnotation::Junction {
-                    num_split_reads,
-                    breakpoint_sequence,
-                } => (
-                    Some("split".to_string()),
-                    None,
-                    None,
-                    None,
-                    None,
-                    Some(*num_split_reads),
-                    None,
-                    Some(breakpoint_sequence.clone()),
-                ),
-            }
-        } else {
-            (None, None, None, None, None, None, None, None)
-        };
-        let is_coverage_segment = if let Some(k) = segment_type.as_ref() {
-            k == "coverage"
-        } else {
-            false
-        };
-        let entry = SegmentEntry {
-            graph_id: *graph_id,
-            circle_id: *circle_id,
-            circle_length: circle_info.length,
-            segment_count: circle_info.segment_count,
-            score: circle_info.score,
-            kind: segment_type,
-            target_from: tid_to_tname[from_ref_id].clone(),
-            from: *from,
-            target_to: tid_to_tname[to_ref_id].clone(),
-            to: *to,
-            length: if is_coverage_segment {
-                Some(from.abs_diff(*to))
-            } else {
-                None
-            },
-            num_exons,
-            gene_ids,
-            gene_names,
-            regulatory_features,
-            coverage,
-            num_split_reads,
-            breakpoint_sequence,
-        };
-        writer.serialize(entry)?;
-    }
-    Ok(())
 }
 
 fn segment_annotation(
@@ -767,36 +523,8 @@ fn breakpoint_sequence(
     Ok(String::from_utf8([seq1, seq2].concat())?)
 }
 
-fn varlociraptor_info(records: &[Record]) -> CircleInfo {
+fn varlociraptor_info(records: &[Record]) -> VarlociraptorInfo {
     let r = &records[0];
-    let circle_length_key = "CircleLength".parse::<Key>().unwrap();
-    let circle_segment_count_key = "CircleSegmentCount".parse::<Key>().unwrap();
-    let support_key = "Support".parse::<Key>().unwrap();
-
-    let length = r
-        .info()
-        .get(&circle_length_key)
-        .map(|f| match f.value() {
-            Some(Value::Integer(i)) => usize::try_from(*i).expect("Invalid circle length"),
-            _ => panic!("Expected integer value for circle length"),
-        })
-        .expect("'CircleLength' info field not found");
-    let segment_count = r
-        .info()
-        .get(&circle_segment_count_key)
-        .map(|f| match f.value() {
-            Some(Value::Integer(i)) => usize::try_from(*i).expect("Invalid segment count"),
-            _ => panic!("Expected integer value for segment count"),
-        })
-        .expect("'CircleSegmentCount' info field not found");
-    let score = r
-        .info()
-        .get(&support_key)
-        .map(|f| match f.value() {
-            Some(Value::Integer(i)) => usize::try_from(*i).expect("Invalid score"),
-            _ => panic!("Expected integer value for score"),
-        })
-        .expect("'Support' info field not found");
 
     let [prob_present, prob_absent, prob_artifact] = [
         ("PROB_PRESENT", "PROB_PRESENT".parse::<Key>().unwrap()),
@@ -818,10 +546,7 @@ fn varlociraptor_info(records: &[Record]) -> CircleInfo {
         .iter()
         .map(|f| f[&af_key].value())
         .collect_vec();
-    CircleInfo {
-        length,
-        segment_count,
-        score,
+    VarlociraptorInfo {
         prob_present,
         prob_absent,
         prob_artifact,
@@ -866,19 +591,16 @@ fn group_event_records(
     event_records
 }
 
-#[derive(Serialize, Debug, Clone, Copy)]
-struct CircleInfo {
-    length: usize,
-    segment_count: usize,
-    score: usize,
+#[derive(Serialize, Deserialize, Debug, Clone, Copy)]
+pub(crate) struct VarlociraptorInfo {
     prob_present: f32,
     prob_absent: f32,
     prob_artifact: f32,
     af_nanopore: Option<f32>,
 }
 
-#[derive(Debug)]
-enum SegmentAnnotation {
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) enum SegmentAnnotation {
     Segment {
         num_exons: usize,
         gene_ids: Vec<String>,
@@ -892,40 +614,4 @@ enum SegmentAnnotation {
         num_split_reads: usize,
         breakpoint_sequence: String,
     },
-}
-
-#[derive(Serialize, Debug, Default)]
-struct CircleAnnotation {
-    num_exons: usize,
-    gene_ids: String,
-    gene_names: String,
-}
-
-// serialization of this with csv doesn't work when the header is derived
-// see https://github.com/BurntSushi/rust-csv/issues/188 and https://github.com/BurntSushi/rust-csv/pull/197
-// #[derive(Serialize, Debug)]
-// struct CircleTableInfo {
-//     graph_id: usize,
-//     circle_id: usize,
-//     circle_info: CircleInfo,
-//     annotation_info: CircleAnnotation,
-// }
-#[derive(Serialize, Debug)]
-struct FlatCircleTableInfo {
-    event_id: String,
-    graph_id: usize,
-    circle_id: usize,
-    circle_length: usize,
-    segment_count: usize,
-    regions: String,
-    score: usize,
-    num_exons: usize,
-    gene_ids: String,
-    gene_names: String,
-    regulatory_features: String,
-    num_split_reads: usize,
-    prob_present: f32,
-    prob_absent: f32,
-    prob_artifact: f32,
-    af_nanopore: Option<f32>,
 }
