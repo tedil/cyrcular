@@ -12,14 +12,11 @@ use bio::io::gff::GffType::GFF3;
 use clap::Parser;
 use flate2::bufread::MultiGzDecoder;
 use itertools::Itertools;
-use noodles::bcf::header::StringMaps;
-use noodles::bcf::Reader;
-use noodles::bgzf::reader::Reader as BgzfReader;
+
+use noodles::vcf;
 use noodles::vcf::header::info::Key;
 use noodles::vcf::record::info::field::Value;
-use noodles::vcf::{Header, Record};
-use noodles::{bcf, vcf};
-use ordered_float::OrderedFloat;
+use noodles::vcf::Record;
 use serde::Serialize;
 
 use crate::cli::{CircleId, EventId, GraphStorage};
@@ -77,8 +74,7 @@ pub(crate) fn main_annotate(args: AnnotateArgs) -> Result<()> {
         None,
         args.breakpoint_sequence_length as usize,
     );
-    let circle_summaries = annotated_graph.summaries(&reference);
-
+    annotated_graph.to_path(&args.output)?;
     Ok(())
 }
 
@@ -243,6 +239,22 @@ use serde::Deserialize;
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct AnnotatedGraph {
     annotated_paths: Vec<(GraphId, Vec<AnnotatedCircle>)>,
+}
+
+impl AnnotatedGraph {
+    pub(crate) fn from_path<P: AsRef<Path>>(path: P) -> Result<Self> {
+        Ok(rmp_serde::from_read(
+            std::fs::File::open(path).map(BufReader::new)?,
+        )?)
+    }
+
+    pub(crate) fn to_path<P: AsRef<Path>>(&self, path: P) -> Result<()> {
+        let mut serializer = std::fs::File::create(&path)
+            .map(BufWriter::new)
+            .map(rmp_serde::Serializer::new)?;
+        self.serialize(&mut serializer)?;
+        Ok(())
+    }
 }
 
 pub(crate) struct CircleSummary {
@@ -555,40 +567,6 @@ fn varlociraptor_info(records: &[Record]) -> VarlociraptorInfo {
             _ => panic!("Expected float value for AF"),
         }),
     }
-}
-type BcfReader = Reader<BgzfReader<BufReader<File>>>;
-fn read_bcf(args: &AnnotateArgs) -> Result<(BcfReader, Header, StringMaps)> {
-    let mut reader = File::open(&args.breakend_vcf)
-        .map(BufReader::new)
-        .map(bcf::Reader::new)?;
-    let _ = reader.read_file_format()?;
-    let raw_header = reader.read_header()?;
-    let header: Header = raw_header.parse()?;
-    let string_maps = StringMaps::from(&header);
-    Ok((reader, header, string_maps))
-}
-
-fn group_event_records(
-    reader: &mut BcfReader,
-    header: &Header,
-    string_maps: &StringMaps,
-) -> HashMap<String, Vec<Record>> {
-    let event_key: Key = "EVENT".parse().unwrap(); // guaranteed to exist
-    let event_records = reader
-        .records()
-        .map(|r| r.unwrap())
-        .map(|r| r.try_into_vcf_record(header, string_maps).unwrap())
-        .map(|r| {
-            (
-                r.info()
-                    .get(&event_key)
-                    .map(|v| v.value().expect("empty EVENT?").to_string())
-                    .unwrap_or_else(|| "UNKNOWN_EVENT".to_string()),
-                r,
-            )
-        })
-        .into_group_map();
-    event_records
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy)]

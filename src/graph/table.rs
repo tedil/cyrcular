@@ -1,19 +1,37 @@
 use std::collections::HashMap;
 use std::fs::File;
-use clap::Parser;
-use serde::{Deserialize, Serialize};
-use std::io::{BufWriter, Write};
-use std::path::PathBuf;
+use std::io::{BufReader, BufWriter, Write};
+use std::path::{Path, PathBuf};
+
 use anyhow::Result;
-use itertools::Itertools;
+use clap::Parser;
 use csv;
+use itertools::Itertools;
+use noodles::bcf;
+use noodles::bcf::header::StringMaps;
+use noodles::bcf::Reader;
+use noodles::bgzf::reader::Reader as BgzfReader;
+use noodles::vcf::header::info::Key;
+use noodles::vcf::{Header, Record};
+use serde::{Deserialize, Serialize};
+
 use crate::cli::{CircleId, EventId};
 use crate::common::ReferenceId;
-use crate::graph::annotate::{AnnotatedCircle, GraphId, SegmentAnnotation, VarlociraptorInfo};
+use crate::graph::annotate::{
+    AnnotatedCircle, AnnotatedGraph, GraphId, SegmentAnnotation, VarlociraptorInfo,
+};
 use crate::graph::Position;
 
 #[derive(Parser)]
 struct TableArgs {
+    /// Path to annotated graph
+    #[clap(parse(from_os_str))]
+    annotated_graph: PathBuf,
+
+    /// Path to breakend records in BCF format
+    #[clap(parse(from_os_str))]
+    records: PathBuf,
+
     /// Path for the overview circle table
     #[clap(long, parse(from_os_str))]
     circle_table: PathBuf,
@@ -21,6 +39,49 @@ struct TableArgs {
     /// Output directory for detailed per-segment information for each circle
     #[clap(long, parse(from_os_str))]
     segment_tables: PathBuf,
+}
+
+fn main_table(args: &TableArgs) -> Result<()> {
+    let annotated_graph = AnnotatedGraph::from_path(&args.annotated_graph)?;
+    eprintln!("Reading breakend records");
+    let (mut reader, header, string_maps) = read_bcf(&args.records)?;
+    let event_records = group_event_records(&mut reader, &header, &string_maps);
+
+    Ok(())
+}
+
+pub(crate) type BcfReader = Reader<BgzfReader<BufReader<File>>>;
+pub(crate) fn read_bcf<P: AsRef<Path>>(path: P) -> Result<(BcfReader, Header, StringMaps)> {
+    let mut reader = File::open(path.as_ref())
+        .map(BufReader::new)
+        .map(bcf::Reader::new)?;
+    let _ = reader.read_file_format()?;
+    let raw_header = reader.read_header()?;
+    let header: Header = raw_header.parse()?;
+    let string_maps: StringMaps = raw_header.parse()?;
+    Ok((reader, header, string_maps))
+}
+pub(crate) fn group_event_records(
+    reader: &mut BcfReader,
+    header: &Header,
+    string_maps: &StringMaps,
+) -> HashMap<String, Vec<Record>> {
+    let event_key: Key = "EVENT".parse().unwrap(); // guaranteed to exist
+    let event_records = reader
+        .records()
+        .map(|r| r.unwrap())
+        .map(|r| r.try_into_vcf_record(header, string_maps).unwrap())
+        .map(|r| {
+            (
+                r.info()
+                    .get(&event_key)
+                    .map(|v| v.value().expect("empty EVENT?").to_string())
+                    .unwrap_or_else(|| "UNKNOWN_EVENT".to_string()),
+                r,
+            )
+        })
+        .into_group_map();
+    event_records
 }
 
 fn tables_from_annotated_graph() {
@@ -141,11 +202,7 @@ fn segment_table_writer(
     ))
 }
 
-type CircleTableEntry = (
-    EventId,
-    VarlociraptorInfo,
-    AnnotatedCircle,
-);
+type CircleTableEntry = (EventId, VarlociraptorInfo, AnnotatedCircle);
 
 fn write_circle_table<W: Write>(writer: W, circle_table: &[FlatCircleTableInfo]) -> Result<()> {
     let mut writer: csv::Writer<_> = csv::WriterBuilder::new()
