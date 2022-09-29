@@ -406,7 +406,7 @@ fn write_segment_table_into<W: Write>(
                     Some(*num_exons),
                     Some(gene_names.join(",")),
                     Some(gene_ids.join(",")),
-                    Some(regulatory_features.into_iter().join(",")),
+                    Some(regulatory_features.iter().join(",")),
                     Some(*num_split_reads),
                     Some(*coverage),
                     breakpoint_sequence.clone(),

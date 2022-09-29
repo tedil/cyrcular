@@ -250,8 +250,7 @@ impl<R: Seek + Read> GraphCaller<R> {
                         let has_length = records.iter().any(|record| {
                             if let Some(Integer(length)) = (*record.info())
                                 .get(&*CIRCLE_LENGTH_KEY)
-                                .map(|v| v.value())
-                                .flatten()
+                                .and_then(|v| v.value())
                             {
                                 *length > 0
                             } else {
@@ -632,7 +631,7 @@ fn insert_split_edges(
                             coverage: coverage_mean,
                             num_split_reads: 1,
                             distance: if ref_id == other_ref_id as u32 {
-                                (partner.1 as i64 - pos as i64).abs() as u32
+                                partner.1.abs_diff(pos) as u32
                             } else {
                                 0
                             },
