@@ -158,7 +158,7 @@ impl AnnotatedCircle {
                             n_ex += num_exons;
                             gids.extend(gene_ids.clone());
                             gnames.extend(gene_names.clone());
-                            n_splits += if num_segments <= 2 {
+                            n_splits += if num_segments == 1 {
                                 // if there's only "one" segment, the split reads loop from one end of the segment to its other end
                                 *num_split_reads
                             } else {
@@ -196,7 +196,7 @@ impl AnnotatedCircle {
             num_split_reads,
             regions,
             regulatory_features,
-            segment_count: 0,
+            segment_count: self.num_segments(),
         }
     }
 
@@ -224,12 +224,19 @@ impl AnnotatedCircle {
     }
 
     pub(crate) fn num_segments(&self) -> usize {
-        self.annotated_paths
+        let n_segs = self
+            .annotated_paths
             .iter()
             .filter(|(_, segment_annotation)| {
                 matches!(segment_annotation, Some(SegmentAnnotation::Segment { .. }))
             })
-            .count()
+            .count();
+        if n_segs == self.annotated_paths.len() && n_segs == 2 {
+            // if there are no junctions, then the circle is a single segment
+            1
+        } else {
+            n_segs
+        }
     }
 }
 

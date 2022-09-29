@@ -54,12 +54,13 @@ pub(crate) fn main_table(args: TableArgs) -> Result<()> {
     let reference = Reference::from_path(&args.reference)?;
     let (circle_summaries, details) =
         tables_from_annotated_graph(&annotated_graph, &event_records, &reference)?;
+
+    std::fs::create_dir_all(&args.segment_tables)?;
     write_circle_table(
         File::create(&args.circle_table).map(BufWriter::new)?,
         &circle_summaries,
     )?;
 
-    std::fs::create_dir_all(&args.segment_tables)?;
     for (event_name, (_, annotated_circle)) in details {
         let mut segment_writer = segment_table_writer(&args, &event_name)
             .unwrap_or_else(|_| panic!("Failed creating file for {}", &event_name));
@@ -254,8 +255,6 @@ fn write_segment_table_into<W: Write>(
     struct SegmentEntry {
         graph_id: GraphId,
         circle_id: CircleId,
-        circle_length: u32,
-        segment_count: usize,
         kind: Option<String>,
         target_from: String,
         from: Position,
@@ -325,8 +324,6 @@ fn write_segment_table_into<W: Write>(
         let entry = SegmentEntry {
             graph_id: annotated_circle.graph_id(),
             circle_id: annotated_circle.circle_id(),
-            circle_length: annotated_circle.circle_length(),
-            segment_count: annotated_circle.num_segments(),
             kind: segment_type,
             target_from: reference.tid_to_tname(*from_ref_id).into(),
             from: *from,
