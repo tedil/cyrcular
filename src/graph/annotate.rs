@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::convert::TryFrom;
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Write};
@@ -40,9 +40,13 @@ pub(crate) struct AnnotateArgs {
     #[clap(long, parse(from_os_str))]
     reference: PathBuf,
 
-    /// (b)gzipped GFF3 file containing annotations with respect to the reference sequence
+    /// (b)gzipped GFF3 file containing gene annotations with respect to the reference sequence
     #[clap(long, parse(from_os_str))]
-    annotation: PathBuf,
+    gene_annotation: PathBuf,
+
+    /// (b)gzipped GFF3 file containing regulatory annotations with respect to the reference sequence
+    #[clap(long, parse(from_os_str))]
+    regulatory_annotation: PathBuf,
 
     /// Path for the overview circle table
     #[clap(long, parse(from_os_str))]
@@ -101,14 +105,12 @@ pub(crate) fn main_annotate(args: AnnotateArgs) -> Result<()> {
     let reference = read_reference(&args.reference)?;
 
     eprintln!("Reading annotation");
-    let annotations = read_gff3(&args.annotation, |record| {
+    let gene_annotations = read_gff3(&args.gene_annotation, |record| {
         record.feature_type() == "gene" || record.feature_type() == "exon"
     })?;
-
-    //let mut segment_tables: HashMap<EventId, Vec<_>> = HashMap::with_capacity(event_records.len());
+    let regulatory_annotations = read_gff3(&args.regulatory_annotation, |_| true)?;
 
     std::fs::create_dir_all(&args.segment_tables)?;
-
     eprintln!("Building circle table");
     let circle_table = graph
         .valid_paths
@@ -122,7 +124,8 @@ pub(crate) fn main_annotate(args: AnnotateArgs) -> Result<()> {
                     if let Some(records) = event_records.get(&event_name) {
                         let entry = circle_table_entry(
                             &tid_to_tname,
-                            &annotations,
+                            &gene_annotations,
+                            &regulatory_annotations,
                             &reference,
                             graph_id,
                             circle_id,
@@ -146,10 +149,11 @@ pub(crate) fn main_annotate(args: AnnotateArgs) -> Result<()> {
     let circle_table = circle_table
         .into_iter()
         .map(|(graph_id, circle_id, circle_info, segment_annotations)| {
-            let (num_exons, gene_ids, gene_names, num_split_reads, regions) =
+            let (num_exons, gene_ids, gene_names, num_split_reads, regions, regulatory_features) =
                 collapse_segment_annotations(&tid_to_tname, circle_info, &segment_annotations);
             let gene_ids = gene_ids.into_iter().unique().join(",");
             let gene_names = gene_names.into_iter().unique().join(",");
+            let regulatory_features = regulatory_features.into_iter().join(",");
             let regions = if circle_info.segment_count == 1 {
                 regions.get(0).cloned().unwrap_or_default()
             } else {
@@ -167,6 +171,7 @@ pub(crate) fn main_annotate(args: AnnotateArgs) -> Result<()> {
                 num_exons,
                 gene_ids,
                 gene_names,
+                regulatory_features,
                 prob_present: circle_info.prob_present,
                 prob_absent: circle_info.prob_absent,
                 prob_artifact: circle_info.prob_artifact,
@@ -204,21 +209,37 @@ fn read_reference<P: AsRef<Path> + std::fmt::Debug>(
         .collect()
 }
 
+type NumExons = usize;
+type GeneIds = Vec<String>;
+type GeneNames = Vec<String>;
+type NumSplitReads = usize;
+type Regions = Vec<String>;
+type RegulatoryFeatures = HashSet<String>;
+
 fn collapse_segment_annotations(
     tid_to_tname: &HashMap<ReferenceId, String>,
     circle_info: CircleInfo,
     segment_annotations: &[(Segment, Option<SegmentAnnotation>)],
-) -> (usize, Vec<String>, Vec<String>, usize, Vec<String>) {
-    let (num_exons, gene_ids, gene_names, num_split_reads, regions) =
+) -> (
+    NumExons,
+    GeneIds,
+    GeneNames,
+    NumSplitReads,
+    Regions,
+    RegulatoryFeatures,
+) {
+    let (num_exons, gene_ids, gene_names, num_split_reads, regions, regulatory_features) =
         segment_annotations.iter().fold(
-            (0, vec![], vec![], 0, vec![]),
-            |(mut n_ex, mut gids, mut gnames, mut n_splits, mut regions), (segment, sa)| {
+            (0, vec![], vec![], 0, vec![], HashSet::new()),
+            |(mut n_ex, mut gids, mut gnames, mut n_splits, mut regions, mut r_feats),
+             (segment, sa)| {
                 if let Some(sa) = sa {
                     match sa {
                         SegmentAnnotation::Segment {
                             num_exons,
                             gene_ids,
                             gene_names,
+                            regulatory_features,
                             num_split_reads,
                             coverage: _,
                             breakpoint_sequence: _,
@@ -233,6 +254,7 @@ fn collapse_segment_annotations(
                                 // otherwise, split reads are described by junction edges and counted below
                                 0
                             };
+                            r_feats.extend(regulatory_features.clone());
                             let (tid_from, from, tid_to, to) = segment;
                             assert_eq!(tid_from, tid_to);
                             regions.push(format!("{}:{}-{}", tid_to_tname[tid_from], from, to));
@@ -244,10 +266,17 @@ fn collapse_segment_annotations(
                         }
                     }
                 }
-                (n_ex, gids, gnames, n_splits, regions)
+                (n_ex, gids, gnames, n_splits, regions, r_feats)
             },
         );
-    (num_exons, gene_ids, gene_names, num_split_reads, regions)
+    (
+        num_exons,
+        gene_ids,
+        gene_names,
+        num_split_reads,
+        regions,
+        regulatory_features,
+    )
 }
 
 fn segment_table_writer(
@@ -266,7 +295,8 @@ fn segment_table_writer(
 
 fn circle_table_entry(
     tid_to_tname: &HashMap<ReferenceId, String>,
-    annotations: &Annotation,
+    gene_annotation: &Annotation,
+    regulatory_annotations: &Annotation,
     reference: &HashMap<ReferenceId, Vec<u8>>,
     graph_id: EventId,
     circle_id: usize,
@@ -280,7 +310,8 @@ fn circle_table_entry(
     Vec<(Segment, Option<SegmentAnnotation>)>,
 ) {
     let segment_annotations = segment_annotation(
-        annotations,
+        gene_annotation,
+        regulatory_annotations,
         reference,
         circle,
         tid_to_tname,
@@ -345,6 +376,7 @@ fn write_segment_table_into<W: Write>(
         num_exons: Option<usize>,
         gene_ids: Option<String>,
         gene_names: Option<String>,
+        regulatory_features: Option<String>,
         coverage: Option<f64>,
         num_split_reads: Option<usize>,
         breakpoint_sequence: Option<String>,
@@ -355,6 +387,7 @@ fn write_segment_table_into<W: Write>(
             num_exons,
             gene_names,
             gene_ids,
+            regulatory_features,
             num_split_reads,
             coverage,
             breakpoint_sequence,
@@ -364,6 +397,7 @@ fn write_segment_table_into<W: Write>(
                     num_exons,
                     gene_ids,
                     gene_names,
+                    regulatory_features,
                     num_split_reads,
                     coverage,
                     breakpoint_sequence,
@@ -372,6 +406,7 @@ fn write_segment_table_into<W: Write>(
                     Some(*num_exons),
                     Some(gene_names.join(",")),
                     Some(gene_ids.join(",")),
+                    Some(regulatory_features.into_iter().join(",")),
                     Some(*num_split_reads),
                     Some(*coverage),
                     breakpoint_sequence.clone(),
@@ -384,13 +419,14 @@ fn write_segment_table_into<W: Write>(
                     None,
                     None,
                     None,
+                    None,
                     Some(*num_split_reads),
                     None,
                     Some(breakpoint_sequence.clone()),
                 ),
             }
         } else {
-            (None, None, None, None, None, None, None)
+            (None, None, None, None, None, None, None, None)
         };
         let is_coverage_segment = if let Some(k) = segment_type.as_ref() {
             k == "coverage"
@@ -416,6 +452,7 @@ fn write_segment_table_into<W: Write>(
             num_exons,
             gene_ids,
             gene_names,
+            regulatory_features,
             coverage,
             num_split_reads,
             breakpoint_sequence,
@@ -426,7 +463,8 @@ fn write_segment_table_into<W: Write>(
 }
 
 fn segment_annotation(
-    annotations: &Annotation,
+    gene_annotations: &Annotation,
+    regulatory_annotations: &Annotation,
     reference: &HashMap<ReferenceId, Vec<u8>>,
     circle: Cycle,
     tid_to_tname: &HashMap<ReferenceId, String>,
@@ -440,64 +478,49 @@ fn segment_annotation(
                 && edge_info.coverage > 1e-4
                 && from_ref_id == to_ref_id;
             if is_coverage_segment {
-                let chrom = &tid_to_tname[&from_ref_id];
-                if let Some(annot) = annotations
-                    .get(chrom)
-                    .or_else(|| annotations.get(&format!("chr{}", chrom)))
-                {
-                    let (from2, to2) = (from.min(to), from.max(to));
-                    let (num_exons, gene_ids, gene_names) = annot
-                        .find(from2 as u64..to2 as u64)
-                        .iter()
-                        .map(|entry| entry.data())
-                        .filter_map(|data| match data.feature_type() {
-                            "gene" => Some((
-                                0,
-                                data.attributes().get("gene_id").cloned(),
-                                data.attributes().get("gene_name").cloned(),
-                            )),
-                            "exon" => Some((
-                                1,
-                                data.attributes().get("gene_id").cloned(),
-                                data.attributes().get("gene_name").cloned(),
-                            )),
-                            _ => None,
-                        })
-                        .fold(
-                            (0, vec![], vec![]),
-                            |(mut num_exons, mut gene_ids, mut gene_names),
-                             (n_exons, gene_id, gene_name)| {
-                                num_exons += n_exons;
-                                gene_ids.extend(gene_id);
-                                gene_names.extend(gene_name);
-                                (num_exons, gene_ids, gene_names)
-                            },
-                        );
-                    let breakpoint_sequence = (to < from).then(|| {
-                        breakpoint_sequence(
-                            reference,
-                            breakpoint_sequence_length,
-                            from_ref_id,
-                            from,
-                            to_ref_id,
-                            to,
-                        )
-                        .unwrap()
-                    });
-                    (
-                        (from_ref_id, from, to_ref_id, to),
-                        Some(SegmentAnnotation::Segment {
-                            num_exons,
-                            gene_ids,
-                            gene_names,
-                            coverage: edge_info.coverage,
-                            num_split_reads: edge_info.num_split_reads,
-                            breakpoint_sequence,
-                        }),
+                let breakpoint_sequence = (to < from).then(|| {
+                    breakpoint_sequence(
+                        reference,
+                        breakpoint_sequence_length,
+                        from_ref_id,
+                        from,
+                        to_ref_id,
+                        to,
                     )
+                    .unwrap()
+                });
+
+                let chrom = &tid_to_tname[&from_ref_id];
+                let gene_annotation = gene_annotations
+                    .get(chrom)
+                    .or_else(|| gene_annotations.get(&format!("chr{}", chrom)));
+                let regulatory_annotation = regulatory_annotations
+                    .get(chrom)
+                    .or_else(|| regulatory_annotations.get(&format!("chr{}", chrom)));
+                let (exons, gene_ids, gene_names) = if let Some(gene_annotation) = gene_annotation {
+                    annotate_genes_and_exons(from, to, gene_annotation)
                 } else {
-                    ((from_ref_id, from, to_ref_id, to), None)
-                }
+                    (HashSet::default(), vec![], vec![])
+                };
+                let regulatory_features = if let Some(regulatory_annotation) = regulatory_annotation
+                {
+                    annotate_regulatory_features(from, to, regulatory_annotation)
+                } else {
+                    HashSet::default()
+                };
+
+                (
+                    (from_ref_id, from, to_ref_id, to),
+                    Some(SegmentAnnotation::Segment {
+                        num_exons: exons.len(),
+                        gene_ids,
+                        gene_names,
+                        regulatory_features,
+                        coverage: edge_info.coverage,
+                        num_split_reads: edge_info.num_split_reads,
+                        breakpoint_sequence,
+                    }),
+                )
             } else {
                 // not a coverage segment but a split junction
                 if edge_info.edge_type.contains(Split) {
@@ -524,6 +547,53 @@ fn segment_annotation(
             (*from_ref_id, *from, *to_ref_id, *to)
         })
         .collect_vec()
+}
+
+fn annotate_genes_and_exons(
+    from: Position,
+    to: Position,
+    annot: &ArrayBackedIntervalTree<u64, gff::Record>,
+) -> (HashSet<String>, Vec<String>, Vec<String>) {
+    let (from2, to2) = (from.min(to), from.max(to));
+    let (exons, gene_ids, gene_names) = annot
+        .find(from2 as u64..to2 as u64)
+        .iter()
+        .map(|entry| entry.data())
+        .filter_map(|data| match data.feature_type() {
+            "gene" => Some((
+                None,
+                data.attributes().get("gene_id").cloned(),
+                data.attributes().get("Name").cloned(),
+            )),
+            "exon" => Some((data.attributes().get("exon_id").cloned(), None, None)),
+            _ => None,
+        })
+        .fold(
+            (HashSet::new(), vec![], vec![]),
+            |(mut exons, mut gene_ids, mut gene_names), (exon_id, gene_id, gene_name)| {
+                if let Some(exon_id) = exon_id {
+                    exons.insert(exon_id);
+                };
+                gene_ids.extend(gene_id);
+                gene_names.extend(gene_name);
+                (exons, gene_ids, gene_names)
+            },
+        );
+    let gene_ids = gene_ids.into_iter().unique().collect_vec();
+    (exons, gene_names, gene_ids)
+}
+
+fn annotate_regulatory_features(
+    from: Position,
+    to: Position,
+    annot: &ArrayBackedIntervalTree<u64, gff::Record>,
+) -> HashSet<String> {
+    let (from2, to2) = (from.min(to), from.max(to));
+    annot
+        .find(from2 as u64..to2 as u64)
+        .iter()
+        .map(|entry| entry.data().feature_type().to_string())
+        .collect()
 }
 
 fn breakpoint_sequence(
@@ -660,6 +730,7 @@ enum SegmentAnnotation {
         num_exons: usize,
         gene_ids: Vec<String>,
         gene_names: Vec<String>,
+        regulatory_features: HashSet<String>,
         num_split_reads: usize,
         coverage: f64,
         breakpoint_sequence: Option<String>,
@@ -698,6 +769,7 @@ struct FlatCircleTableInfo {
     num_exons: usize,
     gene_ids: String,
     gene_names: String,
+    regulatory_features: String,
     num_split_reads: usize,
     prob_present: f32,
     prob_absent: f32,
