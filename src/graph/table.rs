@@ -7,23 +7,24 @@ use anyhow::Result;
 use clap::Parser;
 use csv;
 use itertools::Itertools;
-use noodles::bcf;
 use noodles::bcf::header::StringMaps;
 use noodles::bcf::Reader;
 use noodles::bgzf::reader::Reader as BgzfReader;
 use noodles::vcf::header::info::Key;
+use noodles::vcf::record::info::field::Value;
 use noodles::vcf::{Header, Record};
+use noodles::{bcf, vcf};
+use ordered_float::OrderedFloat;
 use serde::{Deserialize, Serialize};
 
-use crate::cli::{CircleId, EventId};
-use crate::common::ReferenceId;
+use crate::cli::CircleId;
 use crate::graph::annotate::{
-    AnnotatedCircle, AnnotatedGraph, GraphId, SegmentAnnotation, VarlociraptorInfo,
+    event_id, AnnotatedCircle, AnnotatedGraph, GraphId, Reference, SegmentAnnotation,
 };
 use crate::graph::Position;
 
 #[derive(Parser)]
-struct TableArgs {
+pub(crate) struct TableArgs {
     /// Path to annotated graph
     #[clap(parse(from_os_str))]
     annotated_graph: PathBuf,
@@ -31,6 +32,10 @@ struct TableArgs {
     /// Path to breakend records in BCF format
     #[clap(parse(from_os_str))]
     records: PathBuf,
+
+    /// Path to breakend records in BCF format
+    #[clap(long, parse(from_os_str))]
+    reference: PathBuf,
 
     /// Path for the overview circle table
     #[clap(long, parse(from_os_str))]
@@ -41,11 +46,25 @@ struct TableArgs {
     segment_tables: PathBuf,
 }
 
-fn main_table(args: &TableArgs) -> Result<()> {
+pub(crate) fn main_table(args: TableArgs) -> Result<()> {
     let annotated_graph = AnnotatedGraph::from_path(&args.annotated_graph)?;
     eprintln!("Reading breakend records");
     let (mut reader, header, string_maps) = read_bcf(&args.records)?;
     let event_records = group_event_records(&mut reader, &header, &string_maps);
+    let reference = Reference::from_path(&args.reference)?;
+    let (circle_summaries, details) =
+        tables_from_annotated_graph(&annotated_graph, &event_records, &reference)?;
+    write_circle_table(
+        File::create(&args.circle_table).map(BufWriter::new)?,
+        &circle_summaries,
+    )?;
+
+    std::fs::create_dir_all(&args.segment_tables)?;
+    for (event_name, (_, annotated_circle)) in details {
+        let mut segment_writer = segment_table_writer(&args, &event_name)
+            .unwrap_or_else(|_| panic!("Failed creating file for {}", &event_name));
+        write_segment_table_into(&mut segment_writer, &annotated_circle, &reference)?;
+    }
 
     Ok(())
 }
@@ -84,110 +103,124 @@ pub(crate) fn group_event_records(
     event_records
 }
 
-fn tables_from_annotated_graph() {
-    //
-    // eprintln!("Reading breakend records");
-    // let (mut reader, header, string_maps) = read_bcf(&args)?;
-    // // FIXME: this assumes that the order of contigs is consistent between the vcf header, the graph, the bam and other files.
-    // let tid_to_tname = tid_to_tname(&header);
-    //
-    // let event_records = group_event_records(&mut reader, &header, &string_maps);
-    //
-    // std::fs::create_dir_all(&args.segment_tables)?;
-    // eprintln!("Building circle table");
-    // let circle_table = graph
-    //     .valid_paths
-    //     .into_iter()
-    //     .flat_map(|(graph_id, circles)| {
-    //         circles
-    //             .into_iter()
-    //             .enumerate()
-    //             .filter_map(|(circle_id, circle)| {
-    //                 let event_name = format!("graph_{}_circle_{}", graph_id, circle_id);
-    //                 if let Some(records) = event_records.get(&event_name) {
-    //                     let entry = circle_table_entry(
-    //                         &tid_to_tname,
-    //                         &gene_annotations,
-    //                         &regulatory_annotations,
-    //                         &reference,
-    //                         graph_id,
-    //                         circle_id,
-    //                         circle,
-    //                         records,
-    //                         args.breakpoint_sequence_length,
-    //                     );
-    //                     let mut segment_writer = segment_table_writer(&args, &event_name)
-    //                         .unwrap_or_else(|_| panic!("Failed creating file for {}", &event_name));
-    //                     write_segment_table_into(&mut segment_writer, &entry, &tid_to_tname)
-    //                         .unwrap();
-    //                     Some(entry)
-    //                 } else {
-    //                     eprintln!("WARNING: Event {} not found in breakend VCF", event_name);
-    //                     None
-    //                 }
-    //             })
-    //             .collect_vec()
-    //     });
-    //
-    // let circle_table = circle_table
-    //     .into_iter()
-    //     .map(|(graph_id, circle_id, circle_info, segment_annotations)| {
-    //         let (num_exons, gene_ids, gene_names, num_split_reads, regions, regulatory_features) =
-    //             collapse_segment_annotations(&tid_to_tname, circle_info, &segment_annotations);
-    //         let gene_ids = gene_ids.into_iter().unique().join(",");
-    //         let gene_names = gene_names.into_iter().unique().join(",");
-    //         let regulatory_features = regulatory_features.into_iter().join(",");
-    //         let regions = if circle_info.segment_count == 1 {
-    //             regions.get(0).cloned().unwrap_or_default()
-    //         } else {
-    //             regions.join(",")
-    //         };
-    //         FlatCircleTableInfo {
-    //             event_id: format!("{}-{}", graph_id, circle_id),
-    //             graph_id,
-    //             circle_id,
-    //             circle_length: circle_info.length,
-    //             segment_count: circle_info.segment_count,
-    //             regions,
-    //             score: circle_info.score,
-    //             num_split_reads,
-    //             num_exons,
-    //             gene_ids,
-    //             gene_names,
-    //             regulatory_features,
-    //             prob_present: circle_info.prob_present,
-    //             prob_absent: circle_info.prob_absent,
-    //             prob_artifact: circle_info.prob_artifact,
-    //             af_nanopore: circle_info.af_nanopore,
-    //         }
-    //     })
-    //     .sorted_unstable_by_key(|table_entry| {
-    //         (
-    //             OrderedFloat(1. - table_entry.prob_present),
-    //             -(table_entry.num_exons as i64),
-    //             -(table_entry.score as i64),
-    //             OrderedFloat(table_entry.prob_absent),
-    //             table_entry.graph_id,
-    //             table_entry.circle_id,
-    //         )
-    //     })
-    //     .collect_vec();
-    // write_circle_table(
-    //     File::create(&args.circle_table).map(BufWriter::new)?,
-    //     &circle_table,
-    // )?;
+fn varlociraptor_info(records: &[Record]) -> VarlociraptorInfo {
+    let r = &records[0];
 
-    // let gene_ids = gene_ids.into_iter().unique().join(",");
-    // let gene_names = gene_names.into_iter().unique().join(",");
-    // let regulatory_features = regulatory_features.into_iter().join(",");
-    // let regions = if annotated_circle.annotated_paths.len() <= 2 {
-    //     regions.get(0).cloned().unwrap_or_default()
-    // } else {
-    //     regions.join(",")
-    // };
-
-    // let varlociraptor_annotations = varlociraptor_info(records);
+    let [prob_present, prob_absent, prob_artifact] = [
+        ("PROB_PRESENT", "PROB_PRESENT".parse::<Key>().unwrap()),
+        ("PROB_ABSENT", "PROB_ABSENT".parse::<Key>().unwrap()),
+        ("PROB_ARTIFACT", "PROB_ARTIFACT".parse::<Key>().unwrap()),
+    ]
+    .map(move |(name, key)| {
+        r.info()
+            .get(&key)
+            .map(|f| match f.value() {
+                Some(Value::Float(f)) => *f,
+                _ => panic!("Expected float value for {}", name),
+            })
+            .unwrap_or_else(|| panic!("'{}' info field not found", name))
+    });
+    let af_key = "AF".parse::<vcf::header::format::Key>().unwrap();
+    let allele_frequencies = r
+        .genotypes()
+        .iter()
+        .map(|f| f[&af_key].value())
+        .collect_vec();
+    VarlociraptorInfo {
+        prob_present,
+        prob_absent,
+        prob_artifact,
+        af_nanopore: allele_frequencies[0].map(|v| match v {
+            vcf::record::genotype::field::Value::Float(f) => *f,
+            _ => panic!("Expected float value for AF"),
+        }),
+    }
 }
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy)]
+pub(crate) struct VarlociraptorInfo {
+    prob_present: f32,
+    prob_absent: f32,
+    prob_artifact: f32,
+    af_nanopore: Option<f32>,
+}
+
+fn tables_from_annotated_graph(
+    graph: &AnnotatedGraph,
+    event_records: &HashMap<String, Vec<Record>>,
+    reference: &Reference,
+) -> Result<(
+    Vec<FlatCircleTableInfo>,
+    HashMap<String, (VarlociraptorInfo, AnnotatedCircle)>,
+)> {
+    eprintln!("Building circle table");
+    let event_details: HashMap<String, _> = graph
+        .annotated_circles
+        .iter()
+        .cloned()
+        .flat_map(|(graph_id, circles)| {
+            circles
+                .into_iter()
+                .enumerate()
+                .filter_map(|(circle_id, annotated_circle)| {
+                    let event_name = format!("graph_{}_circle_{}", graph_id, circle_id);
+                    if let Some(records) = event_records.get(&event_name) {
+                        Some((event_name, (varlociraptor_info(records), annotated_circle)))
+                    } else {
+                        eprintln!("WARNING: Event {} not found in breakend VCF", &event_name);
+                        None
+                    }
+                })
+                .collect_vec()
+        })
+        .collect();
+
+    let summaries = graph.summaries(reference);
+    let circle_table = summaries
+        .into_iter()
+        .filter_map(|summary| {
+            let gene_ids = summary.gene_ids.into_iter().unique().join(",");
+            let gene_names = summary.gene_names.into_iter().unique().join(",");
+            let regulatory_features = summary.regulatory_features.into_iter().join(",");
+            let regions = if summary.segment_count == 1 {
+                summary.regions.get(0).cloned().unwrap_or_default()
+            } else {
+                summary.regions.join(",")
+            };
+            let event_name = format!("graph_{}_circle_{}", summary.graph_id, summary.circle_id);
+            event_details
+                .get(&event_name)
+                .map(|(varlociraptor_info, _)| FlatCircleTableInfo {
+                    event_id: event_id(summary.graph_id, summary.circle_id),
+                    graph_id: summary.graph_id,
+                    circle_id: summary.circle_id,
+                    circle_length: summary.circle_length,
+                    segment_count: summary.segment_count,
+                    regions,
+                    num_split_reads: summary.num_split_reads,
+                    num_exons: summary.num_exons,
+                    gene_ids,
+                    gene_names,
+                    regulatory_features,
+                    prob_present: varlociraptor_info.prob_present,
+                    prob_absent: varlociraptor_info.prob_absent,
+                    prob_artifact: varlociraptor_info.prob_artifact,
+                    af_nanopore: varlociraptor_info.af_nanopore,
+                })
+        })
+        .sorted_unstable_by_key(|table_entry| {
+            (
+                OrderedFloat(1. - table_entry.prob_present),
+                -(table_entry.num_exons as i64),
+                OrderedFloat(table_entry.prob_absent),
+                table_entry.graph_id,
+                table_entry.circle_id,
+            )
+        })
+        .collect_vec();
+    Ok((circle_table, event_details))
+}
+
 fn segment_table_writer(
     args: &TableArgs,
     event_name: &String,
@@ -202,8 +235,6 @@ fn segment_table_writer(
     ))
 }
 
-type CircleTableEntry = (EventId, VarlociraptorInfo, AnnotatedCircle);
-
 fn write_circle_table<W: Write>(writer: W, circle_table: &[FlatCircleTableInfo]) -> Result<()> {
     let mut writer: csv::Writer<_> = csv::WriterBuilder::new()
         .delimiter(b'\t')
@@ -216,10 +247,9 @@ fn write_circle_table<W: Write>(writer: W, circle_table: &[FlatCircleTableInfo])
 
 fn write_segment_table_into<W: Write>(
     writer: &mut csv::Writer<W>,
-    circle_entry: &CircleTableEntry,
-    tid_to_tname: &HashMap<ReferenceId, String>,
+    annotated_circle: &AnnotatedCircle,
+    reference: &Reference,
 ) -> Result<()> {
-    let (_, circle_info, annotated_circle) = circle_entry;
     #[derive(Serialize, Debug)]
     struct SegmentEntry {
         graph_id: GraphId,
@@ -298,9 +328,9 @@ fn write_segment_table_into<W: Write>(
             circle_length: annotated_circle.circle_length(),
             segment_count: annotated_circle.num_segments(),
             kind: segment_type,
-            target_from: tid_to_tname[from_ref_id].clone(),
+            target_from: reference.tid_to_tname(*from_ref_id).into(),
             from: *from,
-            target_to: tid_to_tname[to_ref_id].clone(),
+            target_to: reference.tid_to_tname(*to_ref_id).into(),
             to: *to,
             length: if is_coverage_segment {
                 Some(from.abs_diff(*to))
@@ -334,10 +364,9 @@ struct FlatCircleTableInfo {
     event_id: String,
     graph_id: usize,
     circle_id: usize,
-    circle_length: usize,
+    circle_length: u32,
     segment_count: usize,
     regions: String,
-    score: usize,
     num_exons: usize,
     gene_ids: String,
     gene_names: String,

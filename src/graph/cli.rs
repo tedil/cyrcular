@@ -9,7 +9,8 @@ use serde::{Deserialize, Serialize};
 use crate::graph::annotate::AnnotateArgs;
 use crate::graph::breakends::BreakendArgs;
 use crate::graph::plot::PlotArgs;
-use crate::graph::{annotate, breakends, plot, Cycle};
+use crate::graph::{annotate, breakends, plot, table, Cycle};
+use crate::graph::table::TableArgs;
 
 #[derive(Parser)]
 pub(crate) struct GraphArgs {
@@ -22,6 +23,7 @@ enum Command {
     Breakends(BreakendArgs),
     Plot(PlotArgs),
     Annotate(AnnotateArgs),
+    Table(TableArgs),
 }
 
 pub(crate) fn main(args: GraphArgs) -> Result<()> {
@@ -29,6 +31,7 @@ pub(crate) fn main(args: GraphArgs) -> Result<()> {
         Command::Breakends(args) => breakends::main_breakends(args),
         Command::Plot(args) => plot::main_plot(args),
         Command::Annotate(args) => annotate::main_annotate(args),
+        Command::Table(args) => table::main_table(args),
     }
 }
 
