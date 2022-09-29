@@ -1,7 +1,6 @@
 use std::collections::{HashMap, HashSet};
-use std::convert::TryFrom;
 use std::fs::File;
-use std::io::{BufReader, BufWriter, Write};
+use std::io::{BufReader, BufWriter};
 use std::ops::Index;
 use std::path::{Path, PathBuf};
 
@@ -12,14 +11,11 @@ use bio::io::gff::GffType::GFF3;
 use clap::Parser;
 use flate2::bufread::MultiGzDecoder;
 use itertools::Itertools;
-
-use noodles::vcf;
-use noodles::vcf::header::info::Key;
-use noodles::vcf::record::info::field::Value;
 use noodles::vcf::Record;
+use serde::Deserialize;
 use serde::Serialize;
 
-use crate::cli::{CircleId, EventId, GraphStorage};
+use crate::cli::{CircleId, GraphStorage};
 use crate::common::ReferenceId;
 use crate::graph::EdgeType::{Neighbour, Split};
 use crate::graph::{Cycle, Position};
@@ -29,10 +25,6 @@ pub(crate) struct AnnotateArgs {
     /// Input graph in msgpack format
     #[clap(parse(from_os_str))]
     graph: PathBuf,
-
-    /// VCF/BCF file containing filtered and processed breakend events for the circles described in the graph
-    #[clap(parse(from_os_str))]
-    breakend_vcf: PathBuf,
 
     /// Reference FASTA file
     #[clap(long, parse(from_os_str))]
@@ -49,6 +41,10 @@ pub(crate) struct AnnotateArgs {
     /// Length of the sequence flanking the breakpoint
     #[clap(long, default_value = "2000")]
     breakpoint_sequence_length: u32,
+
+    /// VCF/BCF file containing filtered and processed breakend events for the circles described in the graph
+    #[clap(long, parse(from_os_str))]
+    breakends: Option<PathBuf>,
 
     #[clap(long)]
     output: PathBuf,
@@ -81,12 +77,12 @@ pub(crate) fn main_annotate(args: AnnotateArgs) -> Result<()> {
 fn annotate_graph(
     graph: GraphStorage,
     reference: &Reference,
-    gene_annotations: &Annotation,
-    regulatory_annotations: &Annotation,
+    gene_annotations: &Annotations,
+    regulatory_annotations: &Annotations,
     event_grouped_records: Option<HashMap<String, Vec<Record>>>,
     breakpoint_sequence_length: usize,
 ) -> AnnotatedGraph {
-    if let Some(event_records) = event_grouped_records {
+    if let Some(_event_records) = event_grouped_records {
         todo!();
     }
 
@@ -116,13 +112,15 @@ fn annotate_graph(
             (graph_id, annotated_circles)
         })
         .collect_vec();
-    let annotated_graph = AnnotatedGraph { annotated_paths };
+    let annotated_graph = AnnotatedGraph {
+        annotated_circles: annotated_paths,
+    };
     annotated_graph
 }
 
 pub(crate) type GraphId = usize;
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub(crate) struct AnnotatedCircle {
     graph_id: GraphId,
     circle_id: CircleId,
@@ -207,7 +205,7 @@ impl AnnotatedCircle {
     }
 }
 
-fn event_id(graph_id: GraphId, circle_id: CircleId) -> String {
+pub(crate) fn event_id(graph_id: GraphId, circle_id: CircleId) -> String {
     format!("{}-{}", graph_id, circle_id)
 }
 
@@ -235,10 +233,9 @@ impl AnnotatedCircle {
     }
 }
 
-use serde::Deserialize;
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct AnnotatedGraph {
-    annotated_paths: Vec<(GraphId, Vec<AnnotatedCircle>)>,
+    pub(crate) annotated_circles: Vec<(GraphId, Vec<AnnotatedCircle>)>,
 }
 
 impl AnnotatedGraph {
@@ -258,22 +255,22 @@ impl AnnotatedGraph {
 }
 
 pub(crate) struct CircleSummary {
-    event_id: String,
-    graph_id: GraphId,
-    circle_id: CircleId,
-    circle_length: u32,
-    segment_count: usize,
-    regions: Vec<String>,
-    num_split_reads: NumSplitReads,
-    num_exons: NumExons,
-    gene_ids: Vec<String>,
-    gene_names: Vec<String>,
-    regulatory_features: HashSet<String>,
+    pub(crate) event_id: String,
+    pub(crate) graph_id: GraphId,
+    pub(crate) circle_id: CircleId,
+    pub(crate) circle_length: u32,
+    pub(crate) segment_count: usize,
+    pub(crate) regions: Vec<String>,
+    pub(crate) num_split_reads: NumSplitReads,
+    pub(crate) num_exons: NumExons,
+    pub(crate) gene_ids: Vec<String>,
+    pub(crate) gene_names: Vec<String>,
+    pub(crate) regulatory_features: HashSet<String>,
 }
 
 impl AnnotatedGraph {
     pub(crate) fn summaries(&self, reference: &Reference) -> Vec<CircleSummary> {
-        self.annotated_paths
+        self.annotated_circles
             .iter()
             .flat_map(|(_graph_id, segment_annotations)| {
                 segment_annotations
@@ -285,11 +282,13 @@ impl AnnotatedGraph {
     }
 }
 
-type Annotation = HashMap<String, ArrayBackedIntervalTree<u64, gff::Record>>;
+type Annotation = ArrayBackedIntervalTree<u64, gff::Record>;
+type Annotations = HashMap<String, Annotation>;
+
 fn read_gff3<P: AsRef<Path> + std::fmt::Debug>(
     path: P,
     filter: fn(&gff::Record) -> bool,
-) -> Result<Annotation> {
+) -> Result<Annotations> {
     let mut annotations = gff::Reader::new(
         File::open(path)
             .map(BufReader::new)
@@ -297,7 +296,7 @@ fn read_gff3<P: AsRef<Path> + std::fmt::Debug>(
             .unwrap(),
         GFF3,
     );
-    let mut trees: HashMap<String, ArrayBackedIntervalTree<u64, gff::Record>> = HashMap::new();
+    let mut trees: HashMap<String, Annotation> = HashMap::new();
     annotations
         .records()
         .map(|r| r.unwrap())
@@ -305,7 +304,7 @@ fn read_gff3<P: AsRef<Path> + std::fmt::Debug>(
         .for_each(|r| {
             let tree = trees
                 .entry(r.seqname().to_string())
-                .or_insert_with(ArrayBackedIntervalTree::new);
+                .or_insert_with(Annotation::new);
             let (start, end) = (r.start().min(r.end()), r.start().max(r.end()));
             tree.insert(*start..*end, r);
         });
@@ -340,7 +339,7 @@ impl Index<&str> for Reference {
 }
 
 impl Reference {
-    fn from_path<P: AsRef<Path> + std::fmt::Debug>(path: P) -> Result<Self> {
+    pub(crate) fn from_path<P: AsRef<Path> + std::fmt::Debug>(path: P) -> Result<Self> {
         let inner: HashMap<ReferenceId, (String, Vec<u8>)> =
             bio::io::fasta::Reader::from_file(path)?
                 .records()
@@ -371,11 +370,7 @@ impl Reference {
 }
 
 type NumExons = usize;
-type GeneIds = Vec<String>;
-type GeneNames = Vec<String>;
 type NumSplitReads = usize;
-type Regions = Vec<String>;
-type RegulatoryFeatures = HashSet<String>;
 
 type Segment = (ReferenceId, Position, ReferenceId, Position);
 
@@ -385,8 +380,8 @@ fn segment_length(segment: &Segment) -> Option<u32> {
 }
 
 fn segment_annotation(
-    gene_annotations: &Annotation,
-    regulatory_annotations: &Annotation,
+    gene_annotations: &Annotations,
+    regulatory_annotations: &Annotations,
     reference: &Reference,
     circle: Cycle,
     breakpoint_sequence_length: u32,
@@ -473,7 +468,7 @@ fn segment_annotation(
 fn annotate_genes_and_exons(
     from: Position,
     to: Position,
-    annot: &ArrayBackedIntervalTree<u64, gff::Record>,
+    annot: &Annotation,
 ) -> (HashSet<String>, Vec<String>, Vec<String>) {
     let (from2, to2) = (from.min(to), from.max(to));
     let (exons, gene_ids, gene_names) = annot
@@ -501,13 +496,14 @@ fn annotate_genes_and_exons(
             },
         );
     let gene_ids = gene_ids.into_iter().unique().collect_vec();
-    (exons, gene_names, gene_ids)
+    let gene_names = gene_names.into_iter().unique().collect_vec();
+    (exons, gene_ids, gene_names)
 }
 
 fn annotate_regulatory_features(
     from: Position,
     to: Position,
-    annot: &ArrayBackedIntervalTree<u64, gff::Record>,
+    annot: &Annotation,
 ) -> HashSet<String> {
     let (from2, to2) = (from.min(to), from.max(to));
     annot
@@ -535,49 +531,7 @@ fn breakpoint_sequence(
     Ok(String::from_utf8([seq1, seq2].concat())?)
 }
 
-fn varlociraptor_info(records: &[Record]) -> VarlociraptorInfo {
-    let r = &records[0];
-
-    let [prob_present, prob_absent, prob_artifact] = [
-        ("PROB_PRESENT", "PROB_PRESENT".parse::<Key>().unwrap()),
-        ("PROB_ABSENT", "PROB_ABSENT".parse::<Key>().unwrap()),
-        ("PROB_ARTIFACT", "PROB_ARTIFACT".parse::<Key>().unwrap()),
-    ]
-    .map(move |(name, key)| {
-        r.info()
-            .get(&key)
-            .map(|f| match f.value() {
-                Some(Value::Float(f)) => *f,
-                _ => panic!("Expected float value for {}", name),
-            })
-            .unwrap_or_else(|| panic!("'{}' info field not found", name))
-    });
-    let af_key = "AF".parse::<vcf::header::format::Key>().unwrap();
-    let allele_frequencies = r
-        .genotypes()
-        .iter()
-        .map(|f| f[&af_key].value())
-        .collect_vec();
-    VarlociraptorInfo {
-        prob_present,
-        prob_absent,
-        prob_artifact,
-        af_nanopore: allele_frequencies[0].map(|v| match v {
-            vcf::record::genotype::field::Value::Float(f) => *f,
-            _ => panic!("Expected float value for AF"),
-        }),
-    }
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, Copy)]
-pub(crate) struct VarlociraptorInfo {
-    prob_present: f32,
-    prob_absent: f32,
-    prob_artifact: f32,
-    af_nanopore: Option<f32>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub(crate) enum SegmentAnnotation {
     Segment {
         num_exons: usize,
