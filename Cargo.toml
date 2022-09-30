@@ -34,7 +34,7 @@ version = "0.6.3"
 features = ["serde-1"]
 
 [dependencies.serde]
-version = "1.0.130"
+version = "1.0.145"
 features = ["derive"]
 
 [dependencies.plotly]
