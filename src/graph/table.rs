@@ -5,7 +5,6 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use clap::Parser;
-use csv;
 use itertools::Itertools;
 use noodles::bcf::header::StringMaps;
 use noodles::bcf::Reader;
