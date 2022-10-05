@@ -17,7 +17,7 @@ use serde::Serialize;
 
 use crate::cli::{CircleId, GraphStorage};
 use crate::common::ReferenceId;
-use crate::graph::EdgeType::{Neighbour, Split};
+use crate::graph::EdgeType::{Deletion, Neighbour, Split};
 use crate::graph::{Cycle, Position};
 
 #[derive(Parser)]
@@ -213,30 +213,32 @@ impl AnnotatedCircle {
     pub(crate) fn circle_length(&self) -> u32 {
         self.annotated_paths
             .iter()
-            .map(|(segment, segment_annotation)| {
-                if matches!(segment_annotation, Some(SegmentAnnotation::Segment { .. })) {
-                    segment_length(segment).unwrap_or(0)
-                } else {
-                    0
-                }
-            })
+            .map(
+                |(segment @ (ref_from, from, ref_to, to), segment_annotation)| {
+                    if ref_from == ref_to && from > to {
+                        0
+                    } else if matches!(segment_annotation, Some(SegmentAnnotation::Segment { .. }))
+                    {
+                        segment_length(segment).unwrap_or(0)
+                    } else {
+                        0
+                    }
+                },
+            )
             .sum()
     }
 
     pub(crate) fn num_segments(&self) -> usize {
-        let n_segs = self
-            .annotated_paths
+        self.annotated_paths
             .iter()
-            .filter(|(_, segment_annotation)| {
-                matches!(segment_annotation, Some(SegmentAnnotation::Segment { .. }))
+            .filter(|((ref_from, from, ref_to, to), segment_annotation)| {
+                if ref_from == ref_to && from > to {
+                    false
+                } else {
+                    matches!(segment_annotation, Some(SegmentAnnotation::Segment { .. }))
+                }
             })
-            .count();
-        if n_segs == self.annotated_paths.len() && n_segs == 2 {
-            // if there are no junctions, then the circle is a single segment
-            1
-        } else {
-            n_segs
-        }
+            .count()
     }
 }
 
@@ -398,7 +400,7 @@ fn segment_annotation(
         .iter()
         .map(|&((from_ref_id, from), (to_ref_id, to), edge_info)| {
             let is_coverage_segment = edge_info.edge_type.contains(Neighbour)
-                && edge_info.coverage > 1e-4
+                && !edge_info.edge_type.contains(Deletion)
                 && from_ref_id == to_ref_id;
             if is_coverage_segment {
                 let breakpoint_sequence = (to < from).then(|| {
