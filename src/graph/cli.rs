@@ -9,8 +9,8 @@ use serde::{Deserialize, Serialize};
 use crate::graph::annotate::AnnotateArgs;
 use crate::graph::breakends::BreakendArgs;
 use crate::graph::plot::PlotArgs;
-use crate::graph::{annotate, breakends, plot, table, Cycle};
 use crate::graph::table::TableArgs;
+use crate::graph::{annotate, breakends, plot, table, Cycle};
 
 #[derive(Parser)]
 pub(crate) struct GraphArgs {
