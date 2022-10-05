@@ -141,6 +141,31 @@ fn auto_bin_size(region: &crate::plot::Region) -> usize {
 }
 
 pub fn graph_to_dot(graph: &BreakpointGraph, header: &Header) -> String {
+    let legend = r##"{
+  rankdir=LR;
+  rank=same;
+  node [shape=plaintext]
+  subgraph cluster_01 { 
+    label = "Legend";
+    key [label=<<table border="0" cellpadding="2" cellspacing="0" cellborder="0">
+      <tr><td align="right" port="i1">neighbour</td></tr>
+      <tr><td align="right" port="i2">split</td></tr>
+      <tr><td align="right" port="i3">neighbour + split</td></tr>
+      <tr><td align="right" port="i4">deletion</td></tr>
+      </table>>]
+    key2 [label=<<table border="0" cellpadding="2" cellspacing="0" cellborder="0">
+      <tr><td port="i1">&nbsp;</td></tr>
+      <tr><td port="i2">&nbsp;</td></tr>
+      <tr><td port="i3">&nbsp;</td></tr>
+      <tr><td port="i4">&nbsp;</td></tr>
+      </table>>]
+    key:i1:e -> key2:i1:w [color="#7E87D6"]
+    key:i2:e -> key2:i2:w [color="#A38F2D", style=dotted]
+    key:i3:e -> key2:i3:w [color="#46A473", style=dashed]
+    key:i4:e -> key2:i4:w [color="#CB7459", style=dotted]
+    }
+}"##;
+
     // build node identifiers from reference id and positions for unique node names in dot repr.
     let node_id = |node: &(u32, u32)| -> String { format!("node_{}_{}", node.0, node.1) };
 
@@ -165,27 +190,28 @@ pub fn graph_to_dot(graph: &BreakpointGraph, header: &Header) -> String {
     let edge_label = |edge: &(Breakpoint, Breakpoint, EdgeInfo)| -> String {
         let (from, to, edge_info) = edge;
         let t = edge_info.edge_type;
-        let color = if t.contains(EdgeType::Neighbour) && t.contains(EdgeType::Split) {
-            "#46A473"
+        let (color, style) = if t.contains(EdgeType::Neighbour) && t.contains(EdgeType::Split) {
+            ("#46A473", Some("dashed"))
         } else if t.contains(EdgeType::Neighbour) && t.contains(EdgeType::Deletion) {
-            "#CB7459"
+            ("#CB7459", Some("dotted"))
         } else if !t.contains(EdgeType::Neighbour) && t.contains(EdgeType::Split) {
-            "#A38F2D"
+            ("#A38F2D", Some("dotted"))
         } else if t.contains(EdgeType::Neighbour)
             && !t.contains(EdgeType::Split)
             && !t.contains(EdgeType::Deletion)
         {
-            "#7E87D6"
+            ("#7E87D6", None)
         } else {
-            "black"
+            ("black", None)
         };
         let label = format!("{:?}", edge_info);
         format!(
-            "{} -> {} [label=\"{}\", color=\"{}\", fontsize = \"12\", minlen = \"{}\", penwidth = \"{:.2}\"]",
+            "{} -> {} [label=\"{}\", color=\"{}\",{} fontsize = \"12\", minlen = \"{}\", penwidth = \"{:.2}\"]",
             node_id(from),
             node_id(to),
             label,
             color,
+            style.map(|s| format!(" style=\"{}\",", s)).unwrap_or_default(),
             1.max(((edge_info.distance as f64 + 1.).log10() / 2.).round() as usize),
             1f64.max((edge_info.coverage + 1.).log(4.)),
         )
@@ -220,10 +246,18 @@ pub fn graph_to_dot(graph: &BreakpointGraph, header: &Header) -> String {
     });
 
     format!(
-        "digraph {{\n\
-         rank = same;\n\
-         rankdir = LR;\n\
-         {} }}",
-        nodes.chain(edges).join(";\n")
+        r##"digraph {{
+          graph [fontname = "helvetica"];
+          node [fontname = "helvetica"];
+          edge [fontname = "helvetica"];
+          {legend}
+          {{
+            rank = same;
+            rankdir = LR;
+            {graph}
+          }}
+        }}"##,
+        legend = legend,
+        graph = nodes.chain(edges).join(";\n"),
     )
 }
