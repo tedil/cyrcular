@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
-use std::io::{BufReader, BufWriter};
+use std::io::{BufRead, BufReader, BufWriter};
 use std::ops::Index;
 use std::path::{Path, PathBuf};
 
@@ -38,6 +38,12 @@ pub(crate) struct AnnotateArgs {
     #[clap(long, parse(from_os_str))]
     regulatory_annotation: PathBuf,
 
+    /// *.out.gz file from RepeatMasker
+    ///
+    /// (https://repeatmasker.org/species/hg.html)
+    #[clap(long, parse(from_os_str))]
+    repeat_annotation: Option<PathBuf>,
+
     /// Length of the sequence flanking the breakpoint
     #[clap(long, default_value = "2000")]
     breakpoint_sequence_length: u32,
@@ -62,11 +68,18 @@ pub(crate) fn main_annotate(args: AnnotateArgs) -> Result<()> {
         record.feature_type() == "gene" || record.feature_type() == "exon"
     })?;
     let regulatory_annotations = read_gff3(&args.regulatory_annotation, |_| true)?;
+    let repeat_annotation = if let Some(path) = &args.repeat_annotation {
+        eprintln!("Reading repeat annotation");
+        Some(read_repeat_masker_annotation(&path)?)
+    } else {
+        None
+    };
     let annotated_graph = annotate_graph(
         graph,
         &reference,
         &gene_annotations,
         &regulatory_annotations,
+        repeat_annotation.as_ref(),
         None,
         args.breakpoint_sequence_length as usize,
     );
@@ -74,11 +87,42 @@ pub(crate) fn main_annotate(args: AnnotateArgs) -> Result<()> {
     Ok(())
 }
 
+type RepeatAnnotation = ArrayBackedIntervalTree<u64, String>;
+type RepeatAnnotations = HashMap<String, RepeatAnnotation>;
+
+fn read_repeat_masker_annotation<P: AsRef<Path>>(path: P) -> Result<RepeatAnnotations> {
+    let reader: BufReader<_> = File::open(path)
+        .map(BufReader::new)
+        .map(MultiGzDecoder::new)
+        .map(BufReader::new)?;
+    let lines = reader.lines().skip(3);
+    let mut trees: RepeatAnnotations = Default::default();
+    lines
+        .map(|line| {
+            let line = line.unwrap();
+            let fields = line.split_whitespace().collect_vec();
+            let tname = fields[4].to_string();
+            let start = fields[5].parse::<u64>().unwrap();
+            let end = fields[6].parse::<u64>().unwrap();
+            let repeat = fields[10].to_string();
+            (tname, start, end, repeat)
+        })
+        .for_each(|(tname, start, end, repeat)| {
+            let tree = trees.entry(tname).or_insert_with(Default::default);
+            tree.insert(start..end, repeat);
+        });
+    for tree in trees.values_mut() {
+        tree.index();
+    }
+    Ok(trees)
+}
+
 fn annotate_graph(
     graph: GraphStorage,
     reference: &Reference,
     gene_annotations: &Annotations,
     regulatory_annotations: &Annotations,
+    repeat_annotations: Option<&RepeatAnnotations>,
     event_grouped_records: Option<HashMap<String, Vec<Record>>>,
     breakpoint_sequence_length: usize,
 ) -> AnnotatedGraph {
@@ -98,6 +142,7 @@ fn annotate_graph(
                     let segment_annotations = segment_annotation(
                         gene_annotations,
                         regulatory_annotations,
+                        repeat_annotations,
                         reference,
                         circle,
                         breakpoint_sequence_length as u32,
@@ -140,51 +185,68 @@ impl AnnotatedCircle {
 impl AnnotatedCircle {
     pub(crate) fn summary(&self, reference: &Reference) -> CircleSummary {
         let num_segments = self.num_segments();
-        let (num_exons, gene_ids, gene_names, num_split_reads, regions, regulatory_features) =
-            self.annotated_paths.iter().fold(
-                (0, vec![], vec![], 0, vec![], HashSet::new()),
-                |(mut n_ex, mut gids, mut gnames, mut n_splits, mut regions, mut r_feats),
-                 (segment, sa)| {
-                    match sa {
-                        Some(SegmentAnnotation::Segment {
-                            num_exons,
-                            gene_ids,
-                            gene_names,
-                            regulatory_features,
-                            num_split_reads,
-                            coverage: _,
-                            breakpoint_sequence: _,
-                        }) => {
-                            n_ex += num_exons;
-                            gids.extend(gene_ids.clone());
-                            gnames.extend(gene_names.clone());
-                            n_splits += if num_segments == 1 {
-                                // if there's only "one" segment, the split reads loop from one end of the segment to its other end
-                                *num_split_reads
-                            } else {
-                                // otherwise, split reads are described by junction edges and counted below
-                                0
-                            };
-                            r_feats.extend(regulatory_features.clone());
-                            let (tid_from, from, tid_to, to) = segment;
-                            assert_eq!(tid_from, tid_to);
-                            regions.push(format!(
-                                "{}:{}-{}",
-                                reference.tid_to_tname(*tid_from),
-                                from,
-                                to
-                            ));
-                        }
-                        Some(SegmentAnnotation::Junction {
-                            num_split_reads, ..
-                        }) => {
-                            n_splits += num_split_reads;
-                        }
-                        _ => (),
+        let (
+            num_exons,
+            gene_ids,
+            gene_names,
+            num_split_reads,
+            regions,
+            regulatory_features,
+            repeats,
+        ) = self.annotated_paths.iter().fold(
+            (0, vec![], vec![], 0, vec![], HashSet::new(), HashSet::new()),
+            |(
+                mut n_ex,
+                mut gids,
+                mut gnames,
+                mut n_splits,
+                mut regions,
+                mut r_feats,
+                mut r_repeats,
+            ),
+             (segment, sa)| {
+                match sa {
+                    Some(SegmentAnnotation::Segment {
+                        num_exons,
+                        gene_ids,
+                        gene_names,
+                        regulatory_features,
+                        repeats,
+                        num_split_reads,
+                        coverage: _,
+                        breakpoint_sequence: _,
+                    }) => {
+                        n_ex += num_exons;
+                        gids.extend(gene_ids.clone());
+                        gnames.extend(gene_names.clone());
+                        n_splits += if num_segments == 1 {
+                            // if there's only "one" segment, the split reads loop from one end of the segment to its other end
+                            *num_split_reads
+                        } else {
+                            // otherwise, split reads are described by junction edges and counted below
+                            0
+                        };
+                        r_feats.extend(regulatory_features.clone());
+                        r_repeats.extend(repeats.clone());
+                        let (tid_from, from, tid_to, to) = segment;
+                        assert_eq!(tid_from, tid_to);
+                        regions.push(format!(
+                            "{}:{}-{}",
+                            reference.tid_to_tname(*tid_from),
+                            from,
+                            to
+                        ));
                     }
-                    (n_ex, gids, gnames, n_splits, regions, r_feats)
-                },
-            );
+                    Some(SegmentAnnotation::Junction {
+                        num_split_reads, ..
+                    }) => {
+                        n_splits += num_split_reads;
+                    }
+                    _ => (),
+                }
+                (n_ex, gids, gnames, n_splits, regions, r_feats, r_repeats)
+            },
+        );
         CircleSummary {
             event_id: event_id(self.graph_id, self.circle_id),
             graph_id: self.graph_id,
@@ -196,6 +258,7 @@ impl AnnotatedCircle {
             num_split_reads,
             regions,
             regulatory_features,
+            repeats,
             segment_count: self.num_segments(),
         }
     }
@@ -275,6 +338,7 @@ pub(crate) struct CircleSummary {
     pub(crate) gene_ids: Vec<String>,
     pub(crate) gene_names: Vec<String>,
     pub(crate) regulatory_features: HashSet<String>,
+    pub(crate) repeats: HashSet<String>,
 }
 
 impl AnnotatedGraph {
@@ -391,6 +455,7 @@ fn segment_length(segment: &Segment) -> Option<u32> {
 fn segment_annotation(
     gene_annotations: &Annotations,
     regulatory_annotations: &Annotations,
+    repeat_annotations: Option<&RepeatAnnotations>,
     reference: &Reference,
     circle: Cycle,
     breakpoint_sequence_length: u32,
@@ -422,6 +487,9 @@ fn segment_annotation(
                 let regulatory_annotation = regulatory_annotations
                     .get(chrom)
                     .or_else(|| regulatory_annotations.get(&format!("chr{}", chrom)));
+                let repeat_annotation = repeat_annotations
+                    .and_then(|r| r.get(chrom))
+                    .or_else(|| repeat_annotations.and_then(|r| r.get(&format!("chr{}", chrom))));
                 let (exons, gene_ids, gene_names) = if let Some(gene_annotation) = gene_annotation {
                     annotate_genes_and_exons(from, to, gene_annotation)
                 } else {
@@ -431,7 +499,12 @@ fn segment_annotation(
                 {
                     annotate_regulatory_features(from, to, regulatory_annotation)
                 } else {
-                    HashSet::default()
+                    Default::default()
+                };
+                let repeat_info = if let Some(repeat_annotation) = repeat_annotation {
+                    annotate_repeats(from, to, repeat_annotation)
+                } else {
+                    Default::default()
                 };
 
                 (
@@ -441,6 +514,7 @@ fn segment_annotation(
                         gene_ids,
                         gene_names,
                         regulatory_features,
+                        repeats: repeat_info,
                         coverage: edge_info.coverage,
                         num_split_reads: edge_info.num_split_reads,
                         breakpoint_sequence,
@@ -522,6 +596,15 @@ fn annotate_regulatory_features(
         .collect()
 }
 
+fn annotate_repeats(from: Position, to: Position, annot: &RepeatAnnotation) -> HashSet<String> {
+    let (from2, to2) = (from.min(to), from.max(to));
+    annot
+        .find(from2 as u64..to2 as u64)
+        .iter()
+        .map(|entry| entry.data().to_string())
+        .collect()
+}
+
 fn breakpoint_sequence(
     reference: &Reference,
     breakpoint_sequence_length: u32,
@@ -547,6 +630,7 @@ pub(crate) enum SegmentAnnotation {
         gene_ids: Vec<String>,
         gene_names: Vec<String>,
         regulatory_features: HashSet<String>,
+        repeats: HashSet<String>,
         num_split_reads: usize,
         coverage: f64,
         breakpoint_sequence: Option<String>,

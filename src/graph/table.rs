@@ -182,6 +182,7 @@ fn tables_from_annotated_graph(
             let gene_ids = summary.gene_ids.into_iter().unique().join(",");
             let gene_names = summary.gene_names.into_iter().unique().join(",");
             let regulatory_features = summary.regulatory_features.into_iter().join(",");
+            let repeats = summary.repeats.into_iter().join(",");
             let regions = if summary.segment_count == 1 {
                 summary.regions.get(0).cloned().unwrap_or_default()
             } else {
@@ -202,6 +203,7 @@ fn tables_from_annotated_graph(
                     gene_ids,
                     gene_names,
                     regulatory_features,
+                    repeats,
                     prob_present: varlociraptor_info.prob_present,
                     prob_absent: varlociraptor_info.prob_absent,
                     prob_artifact: varlociraptor_info.prob_artifact,
@@ -264,6 +266,7 @@ fn write_segment_table_into<W: Write>(
         gene_ids: Option<String>,
         gene_names: Option<String>,
         regulatory_features: Option<String>,
+        repeats: Option<String>,
         coverage: Option<f64>,
         num_split_reads: Option<usize>,
         breakpoint_sequence: Option<String>,
@@ -275,6 +278,7 @@ fn write_segment_table_into<W: Write>(
             gene_names,
             gene_ids,
             regulatory_features,
+            repeats,
             num_split_reads,
             coverage,
             breakpoint_sequence,
@@ -285,6 +289,7 @@ fn write_segment_table_into<W: Write>(
                     gene_ids,
                     gene_names,
                     regulatory_features,
+                    repeats,
                     num_split_reads,
                     coverage,
                     breakpoint_sequence,
@@ -294,6 +299,7 @@ fn write_segment_table_into<W: Write>(
                     Some(gene_names.join(",")),
                     Some(gene_ids.join(",")),
                     Some(regulatory_features.iter().join(",")),
+                    Some(repeats.iter().join(",")),
                     Some(*num_split_reads),
                     Some(*coverage),
                     breakpoint_sequence.clone(),
@@ -307,13 +313,14 @@ fn write_segment_table_into<W: Write>(
                     None,
                     None,
                     None,
+                    None,
                     Some(*num_split_reads),
                     None,
                     Some(breakpoint_sequence.clone()),
                 ),
             }
         } else {
-            (None, None, None, None, None, None, None, None)
+            (None, None, None, None, None, None, None, None, None)
         };
         let is_coverage_segment = if let Some(k) = segment_type.as_ref() {
             k == "coverage"
@@ -337,6 +344,7 @@ fn write_segment_table_into<W: Write>(
             gene_ids,
             gene_names,
             regulatory_features,
+            repeats,
             coverage,
             num_split_reads,
             breakpoint_sequence,
@@ -367,6 +375,7 @@ struct FlatCircleTableInfo {
     gene_ids: String,
     gene_names: String,
     regulatory_features: String,
+    repeats: String,
     num_split_reads: usize,
     prob_present: f32,
     prob_absent: f32,
