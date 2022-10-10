@@ -727,20 +727,18 @@ fn prune(
         .nodes()
         .par_bridge()
         .filter(|node| {
-            let outgoing = graph
-                .edges_directed(*node, Direction::Outgoing)
-                .collect_vec();
+            let outgoing = graph.edges_directed(*node, Outgoing).collect_vec();
             if outgoing
                 .iter()
                 .any(|(_, _, edge)| edge.edge_type == EdgeType::Neighbour)
             {
                 false
             } else {
-                let incoming = graph.edges_directed(*node, Direction::Incoming).count();
-                let no_edge = (incoming + outgoing.len()) == 0;
+                let incoming = graph.edges_directed(*node, Incoming).count();
+                let too_few_edges = (incoming + outgoing.len()) <= 1;
                 // let in_cycle = is_node_in_cycle(&graph, *node);
                 let split_edges_only = split_edge_filter(&graph, node);
-                no_edge || split_edges_only // || !in_cycle
+                too_few_edges || split_edges_only // || !in_cycle
             }
         })
         .collect::<Vec<_>>();
