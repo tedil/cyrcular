@@ -15,27 +15,26 @@ use crate::plot::detailed_coverage;
 #[derive(Parser)]
 pub struct PlotArgs {
     /// Input BAM file
-    #[clap(parse(from_os_str))]
+    #[arg()]
     input: PathBuf,
 
     /// Input graph / valid paths
-    #[clap(long, parse(from_os_str))]
+    #[arg(long)]
     graph: PathBuf,
 
     /// Output directory
-    #[clap(long, parse(from_os_str))]
+    #[arg(long)]
     output: PathBuf,
 
-    #[clap(short, long, default_value = "3")]
+    #[arg(short, long, default_value = "3")]
     breakpoint_margin: u32,
 
-    #[clap(short, long, default_value = "0")]
+    #[arg(short, long, default_value = "0")]
     threads: u16,
 }
 
-pub fn main_plot(args: PlotArgs) -> anyhow::Result<()> {
-    let graph: GraphStorage =
-        rmp_serde::from_read(std::fs::File::open(&args.graph).map(BufReader::new)?)?;
+pub fn main_plot(args: PlotArgs) -> Result<()> {
+    let graph: GraphStorage = rmp_serde::from_read(File::open(&args.graph).map(BufReader::new)?)?;
     let mut records_reader = bam::IndexedReader::build()
         .additional_threads(args.threads)
         .from_path(&args.input)?;

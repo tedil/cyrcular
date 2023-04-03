@@ -12,42 +12,42 @@ use crate::util::vcf_header_from_bam;
 #[derive(Parser)]
 pub struct BreakendArgs {
     /// Input BAM file
-    #[clap(parse(from_os_str))]
+    #[arg()]
     input: PathBuf,
 
     /// Input reference FASTA
-    #[clap(long, parse(from_os_str))]
+    #[arg(long)]
     reference: PathBuf,
 
     /// Output BCF
-    #[clap(long, parse(from_os_str))]
+    #[arg(long)]
     output: PathBuf,
 
     /// Output graph in msgpack format
-    #[clap(long, parse(from_os_str))]
+    #[clap(long)]
     graph: PathBuf,
 
     /// Output connected components in dot format in this folder
-    #[clap(long, parse(from_os_str))]
+    #[clap(long)]
     dot: Option<PathBuf>,
 
     /// Number of reads used to distinguish between covered and not-covered regions.
-    #[clap(long, default_value = "2")]
+    #[arg(long, default_value = "2")]
     min_read_depth: usize,
 
     /// Minimum number of split reads needed as evidence for potential breakpoint
-    #[clap(long, default_value = "3")]
+    #[arg(long, default_value = "3")]
     min_split_reads: usize,
 
     /// Maximum number of plausible paths per component/subgraph
-    #[clap(long, default_value = "5")]
+    #[arg(long, default_value = "5")]
     max_paths_per_component: usize,
 
     /// Maximum length of deletions between neighbouring breakpoints
-    #[clap(long)]
+    #[arg(long)]
     max_deletion_length: Option<usize>,
 
-    #[clap(short, long, default_value = "0")]
+    #[arg(short, long, default_value = "0")]
     threads: u16,
 }
 
