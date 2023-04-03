@@ -20,25 +20,25 @@ use crate::util::split_reads_for_region;
 #[derive(Parser)]
 pub(crate) struct PlotArgs {
     /// Input BAM file
-    #[clap(parse(from_os_str))]
+    #[arg()]
     input: PathBuf,
 
-    #[clap(long, short)]
+    #[arg(long, short)]
     region: Region,
 
-    #[clap(long, short, parse(from_os_str))]
+    #[arg(long, short)]
     output: Option<PathBuf>,
 
-    #[clap(short, long, default_value = "0")]
+    #[arg(short, long, default_value = "0")]
     threads: u16,
 
-    #[clap(short, long)]
+    #[arg(short, long)]
     bin_size: Option<usize>,
 
-    #[clap(short, long)]
+    #[arg(short, long)]
     flank: Option<u32>,
 
-    #[clap(short, long, default_value = "3")]
+    #[arg(short, long, default_value = "3")]
     breakpoint_margin: u32,
 }
 
