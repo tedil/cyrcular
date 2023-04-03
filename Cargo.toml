@@ -10,7 +10,7 @@ bam = "0.1.4"
 anyhow = "1.0.70"
 itertools = "0.10.5"
 clap = { version = "4.2.1", features = ["derive"] }
-noodles = { version = "0.8", features = ["bcf", "vcf"] }
+noodles = { version = "0.28", features = ["bcf", "vcf", "bgzf"] }
 bio = "1.1.0"
 rayon = "1.7.0"
 indexmap = "1.9.3"

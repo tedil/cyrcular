@@ -25,23 +25,23 @@ use crate::graph::Position;
 #[derive(Parser)]
 pub(crate) struct TableArgs {
     /// Path to annotated graph
-    #[clap(parse(from_os_str))]
+    #[arg()]
     annotated_graph: PathBuf,
 
     /// Path to breakend records in BCF format
-    #[clap(parse(from_os_str))]
+    #[arg()]
     records: PathBuf,
 
     /// Path to breakend records in BCF format
-    #[clap(long, parse(from_os_str))]
+    #[arg(long)]
     reference: PathBuf,
 
     /// Path for the overview circle table
-    #[clap(long, parse(from_os_str))]
+    #[arg(long)]
     circle_table: PathBuf,
 
     /// Output directory for detailed per-segment information for each circle
-    #[clap(long, parse(from_os_str))]
+    #[arg(long)]
     segment_tables: PathBuf,
 }
 

@@ -23,36 +23,36 @@ use crate::graph::{Cycle, Position};
 #[derive(Parser)]
 pub(crate) struct AnnotateArgs {
     /// Input graph in msgpack format
-    #[clap(parse(from_os_str))]
+    #[arg()]
     graph: PathBuf,
 
     /// Reference FASTA file
-    #[clap(long, parse(from_os_str))]
+    #[arg(long)]
     reference: PathBuf,
 
     /// (b)gzipped GFF3 file containing gene annotations with respect to the reference sequence
-    #[clap(long, parse(from_os_str))]
+    #[arg(long)]
     gene_annotation: PathBuf,
 
     /// (b)gzipped GFF3 file containing regulatory annotations with respect to the reference sequence
-    #[clap(long, parse(from_os_str))]
+    #[arg(long)]
     regulatory_annotation: PathBuf,
 
     /// *.out.gz file from RepeatMasker
     ///
     /// (https://repeatmasker.org/species/hg.html)
-    #[clap(long, parse(from_os_str))]
+    #[arg(long)]
     repeat_annotation: Option<PathBuf>,
 
     /// Length of the sequence flanking the breakpoint
-    #[clap(long, default_value = "2000")]
+    #[arg(long, default_value = "2000")]
     breakpoint_sequence_length: u32,
 
     /// VCF/BCF file containing filtered and processed breakend events for the circles described in the graph
-    #[clap(long, parse(from_os_str))]
+    #[arg(long)]
     breakends: Option<PathBuf>,
 
-    #[clap(long)]
+    #[arg(long)]
     output: PathBuf,
 }
 
