@@ -145,7 +145,7 @@ pub fn graph_to_dot(graph: &BreakpointGraph, header: &Header) -> String {
   rankdir=LR;
   rank=same;
   node [shape=plaintext]
-  subgraph cluster_01 { 
+  subgraph cluster_01 {
     label = "Legend";
     key [label=<<table border="0" cellpadding="2" cellspacing="0" cellborder="0">
       <tr><td align="right" port="i1">neighbour</td></tr>
