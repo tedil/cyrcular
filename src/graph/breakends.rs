@@ -49,6 +49,10 @@ pub struct BreakendArgs {
 
     #[arg(short, long, default_value = "0")]
     threads: u16,
+
+    /// GFF3 file with annotations with respect to the reference sequence
+    #[clap(long)]
+    annotation: Option<PathBuf>,
 }
 
 pub fn main_breakends(args: BreakendArgs) -> anyhow::Result<()> {

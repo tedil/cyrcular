@@ -3,13 +3,14 @@ use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::io::{Read, Seek};
 
-use crate::common::SplitReadStorage;
-use crate::graph::{CIRCLE_LENGTH_KEY, CIRCLE_SEGMENT_COUNT_KEY, NUM_SPLIT_READS_KEY, SUPPORT_KEY};
 use anyhow::Result;
 use bam::record::{PCR_OR_OPTICAL_DUPLICATE, RECORD_FAILS_QC, RECORD_UNMAPPED, SECONDARY};
 use bam::{Header, Region};
 use itertools::Itertools;
-use std::convert::TryFrom;
+use noodles::vcf::header::record::value::{map::Contig, Map};
+
+use crate::common::SplitReadStorage;
+use crate::graph::{CIRCLE_LENGTH_KEY, CIRCLE_SEGMENT_COUNT_KEY, NUM_SPLIT_READS_KEY, SUPPORT_KEY};
 
 // bam::Region doesn't implement Eq or Hash, so we'll have to wrap that for now
 #[derive(Clone, Debug)]
@@ -128,9 +129,6 @@ pub(crate) fn split_reads<R: Seek + Read>(
 }
 
 pub fn vcf_header_from_bam(bam_header: &Header) -> noodles::vcf::Header {
-    use noodles::vcf::header;
-    use noodles::vcf::header::{record, Contig, Filter, Info};
-    use noodles::vcf::record::info::field::Key;
     let builder = bam_header
         .reference_names()
         .iter()
@@ -138,25 +136,23 @@ pub fn vcf_header_from_bam(bam_header: &Header) -> noodles::vcf::Header {
         .fold(
             noodles::vcf::Header::builder(),
             |builder, (name, length)| {
-                let record = header::Record::new(
-                    record::Key::Contig,
-                    record::Value::Struct(vec![
-                        (String::from("ID"), String::from(name)),
-                        (String::from("length"), format!("{}", length)),
-                    ]),
-                );
-                let contig = Contig::try_from(record).unwrap();
+                let mut contig = Map::<Contig>::new(name.parse().unwrap());
+                *contig.length_mut() = Some(*length as usize);
                 builder.add_contig(contig)
             },
         );
+    use noodles::vcf::header::{
+        info::Key,
+        record::value::{map::Filter, map::Info},
+    };
     let builder = builder
-        .add_info(Info::from(Key::SvType))
-        .add_info(Info::from(Key::MateBreakendIds))
-        .add_info(Info::from(Key::BreakendEventId))
-        .add_info(Info::from((*SUPPORT_KEY).clone()))
-        .add_info(Info::from((*CIRCLE_LENGTH_KEY).clone()))
-        .add_info(Info::from((*CIRCLE_SEGMENT_COUNT_KEY).clone()))
-        .add_info(Info::from((*NUM_SPLIT_READS_KEY).clone()))
-        .add_filter(Filter::pass());
+        .add_info(Map::<Info>::from(Key::SvType))
+        .add_info(Map::<Info>::from(Key::MateBreakendIds))
+        .add_info(Map::<Info>::from(Key::BreakendEventId))
+        .add_info(Map::<Info>::from((*SUPPORT_KEY).clone()))
+        .add_info(Map::<Info>::from((*CIRCLE_LENGTH_KEY).clone()))
+        .add_info(Map::<Info>::from((*CIRCLE_SEGMENT_COUNT_KEY).clone()))
+        .add_info(Map::<Info>::from((*NUM_SPLIT_READS_KEY).clone()))
+        .add_filter(Map::<Filter>::pass());
     builder.build()
 }
