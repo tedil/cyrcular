@@ -38,7 +38,7 @@ version = "1.0.145"
 features = ["derive"]
 
 [dependencies.plotly]
-version = "0.7.0"
+version = "0.8.3"
 features = ["kaleido"]
 
 [dependencies.strum]

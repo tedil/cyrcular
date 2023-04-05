@@ -125,7 +125,7 @@ fn plot_breakend(
             let output = args.output.join(filename);
             let div = plot.to_inline_html(None);
             divs.push(div);
-            plot.to_html(output);
+            plot.write_html(output);
         }
     }
     Ok(divs)
