@@ -184,7 +184,7 @@ fn tables_from_annotated_graph(
             let regulatory_features = summary.regulatory_features.into_iter().join(",");
             let repeats = summary.repeats.into_iter().join(",");
             let regions = if summary.segment_count == 1 {
-                summary.regions.get(0).cloned().unwrap_or_default()
+                summary.regions.first().cloned().unwrap_or_default()
             } else {
                 summary.regions.join(",")
             };
@@ -229,8 +229,7 @@ fn segment_table_writer(
 ) -> Result<csv::Writer<BufWriter<File>>> {
     Ok(csv::WriterBuilder::new().delimiter(b'\t').from_writer(
         File::create(
-            &args
-                .segment_tables
+            args.segment_tables
                 .join(format!("{}_segments.tsv", event_name)),
         )
         .map(BufWriter::new)?,

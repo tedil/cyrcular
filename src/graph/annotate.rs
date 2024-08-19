@@ -70,7 +70,7 @@ pub(crate) fn main_annotate(args: AnnotateArgs) -> Result<()> {
     let regulatory_annotations = read_gff3(&args.regulatory_annotation, |_| true)?;
     let repeat_annotation = if let Some(path) = &args.repeat_annotation {
         eprintln!("Reading repeat annotation");
-        Some(read_repeat_masker_annotation(&path)?)
+        Some(read_repeat_masker_annotation(path)?)
     } else {
         None
     };
@@ -108,7 +108,7 @@ fn read_repeat_masker_annotation<P: AsRef<Path>>(path: P) -> Result<RepeatAnnota
             (tname, start, end, repeat)
         })
         .for_each(|(tname, start, end, repeat)| {
-            let tree = trees.entry(tname).or_insert_with(Default::default);
+            let tree = trees.entry(tname).or_default();
             tree.insert(start..end, repeat);
         });
     for tree in trees.values_mut() {
@@ -157,10 +157,10 @@ fn annotate_graph(
             (graph_id, annotated_circles)
         })
         .collect_vec();
-    let annotated_graph = AnnotatedGraph {
+
+    AnnotatedGraph {
         annotated_circles: annotated_paths,
-    };
-    annotated_graph
+    }
 }
 
 pub(crate) type GraphId = usize;
@@ -375,9 +375,7 @@ fn read_gff3<P: AsRef<Path> + std::fmt::Debug>(
         .map(|r| r.unwrap())
         .filter(filter)
         .for_each(|r| {
-            let tree = trees
-                .entry(r.seqname().to_string())
-                .or_insert_with(Annotation::new);
+            let tree = trees.entry(r.seqname().to_string()).or_default();
             let (start, end) = (r.start().min(r.end()), r.start().max(r.end()));
             tree.insert(*start..*end, r);
         });

@@ -105,9 +105,7 @@ impl<'a> SplitReadInfo<'a> {
                     dbg!(&record);
                     continue;
                 }
-                let tree = trees
-                    .entry(ref_id as u32)
-                    .or_insert_with(ArrayBackedIntervalTree::new);
+                let tree = trees.entry(ref_id as u32).or_default();
                 tree.insert(start..end, record);
             }
         }

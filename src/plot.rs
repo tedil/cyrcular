@@ -8,9 +8,9 @@ use bam::pileup::AlnType;
 use bam::record::{PCR_OR_OPTICAL_DUPLICATE, RECORD_FAILS_QC, RECORD_UNMAPPED, SECONDARY};
 use clap::Parser;
 use itertools::Itertools;
-use plotly::common::{AxisSide, DashType, Line, Marker, Mode, Side, Title};
+use plotly::common::{AxisSide, DashType, Line, Marker, Mode, Title};
 use plotly::layout::themes::PLOTLY_WHITE;
-use plotly::layout::{Axis, BarMode, Shape, ShapeLine, Template};
+use plotly::layout::{Axis, BarMode, Shape, ShapeLine};
 use plotly::{color::Rgb, Bar, ImageFormat, Layout, Plot, Scatter};
 use strum::IntoStaticStr;
 
@@ -255,7 +255,7 @@ pub(crate) fn plot(
                 .map(|(&count, &sum)| count as f64 / sum as f64)
                 .collect_vec(),
         )
-        .name(&s)
+        .name(s)
         .width((bin_size as f64 * 0.95).round() as usize)
         // from https://personal.sron.nl/~pault/
         .marker(Marker::new().color(match feature {
