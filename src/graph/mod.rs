@@ -11,12 +11,11 @@ use std::time::Instant;
 use anyhow::Result;
 use bam::Record;
 use bio::data_structures::interval_tree::ArrayBackedIntervalTree;
-use lazy_static::lazy_static;
 use enumflags2::{bitflags, BitFlags};
 use indexmap::set::IndexSet;
 use itertools::Itertools;
-use noodles::vcf::header::Number;
-use noodles::vcf::record::info::field::Key;
+use lazy_static::lazy_static;
+use noodles::vcf::header::info::Key;
 use noodles::vcf::record::info::field::Value::Integer;
 use ordered_float::OrderedFloat;
 use petgraph::prelude::*;
@@ -28,9 +27,11 @@ use serde::{Deserialize, Serialize};
 use crate::common::{read_depths, ReadDepth, ReferenceId, SplitReadInfo};
 use crate::util::{default_filter, split_reads};
 
+mod annotate;
 mod breakends;
 pub(crate) mod cli;
 mod plot;
+mod table;
 
 type Position = u32;
 type Breakpoint = (ReferenceId, Position);
@@ -248,8 +249,9 @@ impl<R: Seek + Read> GraphCaller<R> {
                         // TODO: find out why these circle with no proper coverage-segments
                         // do not get filtered out earlier
                         let has_length = records.iter().any(|record| {
-                            if let Some(Integer(length)) =
-                                (*record.info()).get(&*CIRCLE_LENGTH_KEY).map(|v| v.value())
+                            if let Some(Integer(length)) = (*record.info())
+                                .get(&CIRCLE_LENGTH_KEY)
+                                .and_then(|v| v.value())
                             {
                                 *length > 0
                             } else {
@@ -262,7 +264,7 @@ impl<R: Seek + Read> GraphCaller<R> {
                             records.sort_unstable_by_key(|record| {
                                 (
                                     record.chromosome().to_string(),
-                                    i32::from(record.position()),
+                                    usize::from(record.position()),
                                 )
                             });
                             let cycle = Cycle {
@@ -328,30 +330,10 @@ impl Debug for EdgeInfo {
 type Edge = (Breakpoint, Breakpoint, EdgeInfo);
 
 lazy_static! {
-    pub(crate) static ref SUPPORT_KEY: Key = Key::Other(
-        "Support".into(),
-        Number::Count(1),
-        noodles::vcf::header::info::Type::Integer,
-        "Support score of the circle".into(),
-    );
-    pub(crate) static ref CIRCLE_LENGTH_KEY: Key = Key::Other(
-        "CircleLength".into(),
-        Number::Count(1),
-        noodles::vcf::header::info::Type::Integer,
-        "Length of the circle this breakpoint belongs to".into(),
-    );
-    pub(crate) static ref CIRCLE_SEGMENT_COUNT_KEY: Key = Key::Other(
-        "CircleSegmentCount".into(),
-        Number::Count(1),
-        noodles::vcf::header::info::Type::Integer,
-        "Number of circle segments.".into(),
-    );
-    pub(crate) static ref NUM_SPLIT_READS_KEY: Key = Key::Other(
-        "SplitReads".into(),
-        Number::Count(1),
-        noodles::vcf::header::info::Type::Integer,
-        "Number of split reads for this breakpoint.".into(),
-    );
+    pub(crate) static ref SUPPORT_KEY: Key = Key::Other("Support".into(),);
+    pub(crate) static ref CIRCLE_LENGTH_KEY: Key = Key::Other("CircleLength".into(),);
+    pub(crate) static ref CIRCLE_SEGMENT_COUNT_KEY: Key = Key::Other("CircleSegmentCount".into(),);
+    pub(crate) static ref NUM_SPLIT_READS_KEY: Key = Key::Other("SplitReads".into(),);
 }
 
 fn breakend_event<R: Read + Seek>(
@@ -366,7 +348,6 @@ fn breakend_event<R: Read + Seek>(
     use noodles::vcf::record::info::field::*;
     use noodles::vcf::record::info::Field;
     use noodles::vcf::record::*;
-    use std::convert::TryFrom;
 
     let mut ref_base_at = |ref_name: &str, idx: u64| -> char {
         reference
@@ -438,24 +419,28 @@ fn breakend_event<R: Read + Seek>(
         let sub_event_id = i * partners.len();
         for (j, (chrom, _ref_name, ref_base, ref_pos)) in partners.iter().enumerate() {
             let infos = vec![
-                Field::new((*SUPPORT_KEY).clone(), Value::Integer(score as i32)),
+                Field::new((*SUPPORT_KEY).clone(), Some(Integer(score as i32))),
                 Field::new(
                     (*CIRCLE_LENGTH_KEY).clone(),
-                    Value::Integer(circle_length as i32),
+                    Some(Integer(circle_length as i32)),
                 ),
                 Field::new(
                     (*CIRCLE_SEGMENT_COUNT_KEY).clone(),
-                    Value::Integer(num_segments as i32),
+                    Some(Integer(num_segments as i32)),
                 ),
                 Field::new(
                     (*NUM_SPLIT_READS_KEY).clone(),
-                    Value::Integer(num_split_reads as i32),
+                    Some(Integer(num_split_reads as i32)),
                 ),
-                Field::new(Key::SvType, Value::String("BND".into())),
-                Field::new(Key::BreakendEventId, Value::String(event_id.clone())),
+                Field::new(Key::SvType, Some(Value::String("BND".into()))),
+                Field::new(Key::BreakendEventId, Some(Value::String(event_id.clone()))),
                 Field::new(
                     Key::MateBreakendIds,
-                    Value::String(format!("{}_{}", event_id, sub_event_id + (1 - j))),
+                    Some(Value::String(format!(
+                        "{}_{}",
+                        event_id,
+                        sub_event_id + (1 - j)
+                    ))),
                 ),
             ];
             let builder = vcf::Record::builder()
@@ -467,7 +452,7 @@ fn breakend_event<R: Read + Seek>(
                     .set_chromosome(chrom.clone())
                     .set_ids(format!("{}_{}", event_id, sub_event_id + j).parse()?)
                     // TODO we have to add 1 here since we're building **VCF** records which start indexing at 1, not 0
-                    .set_position(Position::try_from(*ref_pos as i32 + 1)?)
+                    .set_position(Position::try_from(*ref_pos as usize + 1)?)
                     .set_reference_bases(format!("{}", ref_base).parse()?)
                     .set_info(Info::try_from(infos)?)
             };
@@ -647,7 +632,7 @@ fn insert_split_edges(
                             coverage: coverage_mean,
                             num_split_reads: 1,
                             distance: if ref_id == other_ref_id as u32 {
-                                (partner.1 as i64 - pos as i64).abs() as u32
+                                partner.1.abs_diff(pos)
                             } else {
                                 0
                             },
@@ -742,20 +727,18 @@ fn prune(
         .nodes()
         .par_bridge()
         .filter(|node| {
-            let outgoing = graph
-                .edges_directed(*node, Direction::Outgoing)
-                .collect_vec();
+            let outgoing = graph.edges_directed(*node, Outgoing).collect_vec();
             if outgoing
                 .iter()
                 .any(|(_, _, edge)| edge.edge_type == EdgeType::Neighbour)
             {
                 false
             } else {
-                let incoming = graph.edges_directed(*node, Direction::Incoming).count();
-                let no_edge = (incoming + outgoing.len()) == 0;
+                let incoming = graph.edges_directed(*node, Incoming).count();
+                let too_few_edges = (incoming + outgoing.len()) <= 1;
                 // let in_cycle = is_node_in_cycle(&graph, *node);
                 let split_edges_only = split_edge_filter(&graph, node);
-                no_edge || split_edges_only // || !in_cycle
+                too_few_edges || split_edges_only // || !in_cycle
             }
         })
         .collect::<Vec<_>>();

@@ -8,9 +8,10 @@ use bam::pileup::AlnType;
 use bam::record::{PCR_OR_OPTICAL_DUPLICATE, RECORD_FAILS_QC, RECORD_UNMAPPED, SECONDARY};
 use clap::Parser;
 use itertools::Itertools;
-use plotly::common::{Line, Marker, Mode, Side, Title};
+use plotly::common::{AxisSide, DashType, Line, Marker, Mode, Title};
+use plotly::layout::themes::PLOTLY_WHITE;
 use plotly::layout::{Axis, BarMode, Shape, ShapeLine};
-use plotly::{Bar, ImageFormat, Layout, Plot, Rgb, Scatter};
+use plotly::{color::Rgb, Bar, ImageFormat, Layout, Plot, Scatter};
 use strum::IntoStaticStr;
 
 use crate::util::split_reads_for_region;
@@ -86,9 +87,9 @@ pub(crate) fn main(args: PlotArgs) -> Result<()> {
 
     if let Some(output) = args.output {
         if let Some("html") = output.extension().and_then(|ext| ext.to_str()) {
-            plot.to_html(output);
+            plot.write_html(output);
         } else {
-            plot.save(
+            plot.write_image(
                 output.clone(),
                 match output.extension().and_then(|ext| ext.to_str()) {
                     Some("png") => ImageFormat::PNG,
@@ -245,6 +246,7 @@ pub(crate) fn plot(
         .iter()
         .sorted_by_key(|&(&feature, _counts)| feature)
     {
+        let s: &str = feature.into();
         let bar = Bar::new(
             xx.clone(),
             counts
@@ -253,7 +255,7 @@ pub(crate) fn plot(
                 .map(|(&count, &sum)| count as f64 / sum as f64)
                 .collect_vec(),
         )
-        .name(feature.into())
+        .name(s)
         .width((bin_size as f64 * 0.95).round() as usize)
         // from https://personal.sron.nl/~pault/
         .marker(Marker::new().color(match feature {
@@ -281,7 +283,7 @@ pub(crate) fn plot(
         .mode(Mode::LinesMarkers);
     plot.add_trace(read_depth_trace);
     let layout = Layout::new()
-        .template("plotly_white")
+        .template(&*PLOTLY_WHITE)
         .bar_mode(BarMode::Stack)
         .x_axis(
             Axis::new()
@@ -293,7 +295,7 @@ pub(crate) fn plot(
                 .title(Title::new("ratio of bases"))
                 .anchor("x")
                 .range(vec![0., 1.])
-                .side(Side::Left),
+                .side(AxisSide::Left),
         )
         .y_axis2(
             Axis::new()
@@ -301,7 +303,7 @@ pub(crate) fn plot(
                 .overlaying("y")
                 .anchor("x")
                 .range(vec![0., max_read_depth as f64])
-                .side(Side::Right),
+                .side(AxisSide::Right),
         )
         .title(Title::new(&format!(
             "Coverage for region {}:{}-{}, length: {} (bin_size: {})",
@@ -313,13 +315,13 @@ pub(crate) fn plot(
         )))
         .shapes(vec![
             Shape::new()
-                .line(ShapeLine::new().dash("dot"))
+                .line(ShapeLine::new().dash(DashType::Dot))
                 .x0(target_region.start as f64 - bin_size as f64 / 2.)
                 .x1(target_region.start as f64 - bin_size as f64 / 2.)
                 .y0(0.)
                 .y1(1.),
             Shape::new()
-                .line(ShapeLine::new().dash("dot"))
+                .line(ShapeLine::new().dash(DashType::Dot))
                 .x0(target_region.end as f64 - bin_size as f64 / 2.)
                 .x1(target_region.end as f64 - bin_size as f64 / 2.)
                 .y0(0.)
