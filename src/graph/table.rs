@@ -32,15 +32,20 @@ pub(crate) struct TableArgs {
     #[arg()]
     records: PathBuf,
 
-    /// Path to breakend records in BCF format
+    /// Path to reference
     #[arg(long)]
     reference: PathBuf,
+    
+    /// Comma-separated list of (lowercase) event names that have a PROB_<event_name> INFO field in the BCF.
+    /// Usually, these will be events that have been specified in the varlociraptor calling scenario YAML file.
+    #[arg(long, value_delimiter = ',', num_args = 1..)]
+    event_names: Vec<String>,
 
-    /// Path for the overview circle table
+    /// Path for the overview circle table output
     #[arg(long)]
     circle_table: PathBuf,
 
-    /// Output directory for detailed per-segment information for each circle
+    /// Path for the output directory for the detailed per-segment information for each circle
     #[arg(long)]
     segment_tables: PathBuf,
 }
@@ -51,8 +56,9 @@ pub(crate) fn main_table(args: TableArgs) -> Result<()> {
     let (mut reader, header, string_maps) = read_bcf(&args.records)?;
     let event_records = group_event_records(&mut reader, &header, &string_maps);
     let reference = Reference::from_path(&args.reference)?;
+    let prob_info_fields: Vec<String> = event_names_to_prob_names(&args.event_names);
     let (circle_summaries, details) =
-        tables_from_annotated_graph(&annotated_graph, &event_records, &reference)?;
+        tables_from_annotated_graph(&annotated_graph, &event_records, &reference, &prob_info_fields)?;
 
     std::fs::create_dir_all(&args.segment_tables)?;
     write_circle_table(
@@ -103,23 +109,37 @@ pub(crate) fn group_event_records(
     event_records
 }
 
-fn varlociraptor_info(records: &[Record]) -> VarlociraptorInfo {
+fn event_names_to_prob_names(event_names: &Vec<String>) -> Vec<String> {
+    event_names.into_iter()
+        .map(|event_name| event_name.to_uppercase())
+        .map(|mut e_n| {
+            e_n.insert_str(0, "PROB_");
+            e_n
+        })
+        .collect()
+}
+
+fn get_value_from_prob_name(prob_name: &String, record: &Record) -> f32 {
+    let key = prob_name.parse::<Key>().unwrap();
+    record.info()
+        .get(&key)
+        .map(|f| match f.value() {
+            Some(Value::Float(f)) => *f,
+            _ => panic!("Expected float value for {}", prob_name),
+        })
+        .unwrap_or_else(|| panic!("'{}' info field not found", prob_name))
+}
+
+fn varlociraptor_info(records: &[Record], prob_info_fields: &Vec<String>) -> VarlociraptorInfo {
     let r = &records[0];
 
-    let [prob_present, prob_absent, prob_artifact] = [
-        ("PROB_PRESENT", "PROB_PRESENT".parse::<Key>().unwrap()),
-        ("PROB_ABSENT", "PROB_ABSENT".parse::<Key>().unwrap()),
-        ("PROB_ARTIFACT", "PROB_ARTIFACT".parse::<Key>().unwrap()),
-    ]
-    .map(move |(name, key)| {
-        r.info()
-            .get(&key)
-            .map(|f| match f.value() {
-                Some(Value::Float(f)) => *f,
-                _ => panic!("Expected float value for {}", name),
-            })
-            .unwrap_or_else(|| panic!("'{}' info field not found", name))
-    });
+    let prob_absent = get_value_from_prob_name(&String::from("PROB_ABSENT"), r);
+    let prob_artifact = get_value_from_prob_name(&String::from("PROB_ARTIFACT"), r);
+    let event_probs: HashMap<String, f32> = prob_info_fields
+    .into_iter()
+    .map(|field_name| {
+        (field_name.clone(), get_value_from_prob_name(field_name, r))
+    }).collect();
     let af_key = "AF".parse::<vcf::header::format::Key>().unwrap();
     let allele_frequencies = r
         .genotypes()
@@ -127,9 +147,9 @@ fn varlociraptor_info(records: &[Record]) -> VarlociraptorInfo {
         .map(|f| f[&af_key].value())
         .collect_vec();
     VarlociraptorInfo {
-        prob_present,
         prob_absent,
         prob_artifact,
+        event_probs,
         af_nanopore: allele_frequencies[0].map(|v| match v {
             vcf::record::genotype::field::Value::Float(f) => *f,
             _ => panic!("Expected float value for AF"),
@@ -137,11 +157,11 @@ fn varlociraptor_info(records: &[Record]) -> VarlociraptorInfo {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, Copy)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub(crate) struct VarlociraptorInfo {
-    prob_present: f32,
     prob_absent: f32,
     prob_artifact: f32,
+    event_probs: HashMap<String, f32>,
     af_nanopore: Option<f32>,
 }
 
@@ -149,6 +169,7 @@ fn tables_from_annotated_graph(
     graph: &AnnotatedGraph,
     event_records: &HashMap<String, Vec<Record>>,
     reference: &Reference,
+    prob_info_fields: &Vec<String>,
 ) -> Result<(
     Vec<FlatCircleTableInfo>,
     HashMap<String, (VarlociraptorInfo, AnnotatedCircle)>,
@@ -165,7 +186,7 @@ fn tables_from_annotated_graph(
                 .filter_map(|(circle_id, annotated_circle)| {
                     let event_name = format!("graph_{}_circle_{}", graph_id, circle_id);
                     if let Some(records) = event_records.get(&event_name) {
-                        Some((event_name, (varlociraptor_info(records), annotated_circle)))
+                        Some((event_name, (varlociraptor_info(records, prob_info_fields), annotated_circle)))
                     } else {
                         eprintln!("WARNING: Event {} not found in breakend VCF", &event_name);
                         None
@@ -204,15 +225,15 @@ fn tables_from_annotated_graph(
                     gene_names,
                     regulatory_features,
                     repeats,
-                    prob_present: varlociraptor_info.prob_present,
+                    event_probs: varlociraptor_info.event_probs.clone(),
                     prob_absent: varlociraptor_info.prob_absent,
-                    prob_artifact: varlociraptor_info.prob_artifact,
+                    prob_artifact: varlociraptor_info.prob_absent,
                     af_nanopore: varlociraptor_info.af_nanopore,
                 })
         })
         .sorted_unstable_by_key(|table_entry| {
             (
-                OrderedFloat(1. - table_entry.prob_present),
+                OrderedFloat(1. - table_entry.event_probs.get("PROB_PRESENT").unwrap().clone()),
                 -(table_entry.num_exons as i64),
                 OrderedFloat(table_entry.prob_absent),
                 table_entry.graph_id,
@@ -376,8 +397,8 @@ struct FlatCircleTableInfo {
     regulatory_features: String,
     repeats: String,
     num_split_reads: usize,
-    prob_present: f32,
     prob_absent: f32,
     prob_artifact: f32,
+    event_probs: HashMap<String,f32>,
     af_nanopore: Option<f32>,
 }
