@@ -15,6 +15,7 @@ use noodles::vcf::{Header, Record};
 use noodles::{bcf, vcf};
 use ordered_float::OrderedFloat;
 use serde::{Deserialize, Serialize};
+use struct_field_names_as_array::FieldNamesAsArray;
 
 use crate::cli::CircleId;
 use crate::graph::annotate::{
@@ -225,7 +226,7 @@ fn tables_from_annotated_graph(
                     gene_names,
                     regulatory_features,
                     repeats,
-                    event_probs: varlociraptor_info.event_probs.clone(),
+                    varlociraptor_event_prob: varlociraptor_info.event_probs.values().sum(),
                     prob_absent: varlociraptor_info.prob_absent,
                     prob_artifact: varlociraptor_info.prob_absent,
                     af_nanopore: varlociraptor_info.af_nanopore,
@@ -233,7 +234,7 @@ fn tables_from_annotated_graph(
         })
         .sorted_unstable_by_key(|table_entry| {
             (
-                OrderedFloat(1. - table_entry.event_probs.get("PROB_PRESENT").unwrap().clone()),
+                OrderedFloat(1. - table_entry.varlociraptor_event_prob),
                 -(table_entry.num_exons as i64),
                 OrderedFloat(table_entry.prob_absent),
                 table_entry.graph_id,
@@ -260,7 +261,9 @@ fn segment_table_writer(
 fn write_circle_table<W: Write>(writer: W, circle_table: &[FlatCircleTableInfo]) -> Result<()> {
     let mut writer: csv::Writer<_> = csv::WriterBuilder::new()
         .delimiter(b'\t')
+        .has_headers(false)
         .from_writer(writer);
+    writer.write_record(FlatCircleTableInfo::FIELD_NAMES_AS_ARRAY)?;
     for entry in circle_table {
         writer.serialize(entry)?;
     }
@@ -383,7 +386,7 @@ fn write_segment_table_into<W: Write>(
 //     circle_info: CircleInfo,
 //     annotation_info: CircleAnnotation,
 // }
-#[derive(Serialize, Debug)]
+#[derive(Serialize, Debug, FieldNamesAsArray)]
 struct FlatCircleTableInfo {
     event_id: String,
     graph_id: usize,
@@ -397,8 +400,8 @@ struct FlatCircleTableInfo {
     regulatory_features: String,
     repeats: String,
     num_split_reads: usize,
+    varlociraptor_event_prob: f32,
     prob_absent: f32,
     prob_artifact: f32,
-    event_probs: HashMap<String,f32>,
     af_nanopore: Option<f32>,
 }
