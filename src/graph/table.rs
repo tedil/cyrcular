@@ -42,6 +42,12 @@ pub(crate) struct TableArgs {
     #[arg(long, value_delimiter = ',', num_args = 1..)]
     event_names: Vec<String>,
 
+    /// Event name for the prob_<joint_event_name> header line entry in the table output.
+    /// This will be the column reporting on the sum of the probabilities of the events given under --event-names.
+    /// In a workflow, these two options should usually be controlled by some configuration of varlociraptor FDR control.
+    #[arg(long, default_value = "joint_event")]
+    joint_event_name: String,
+
     /// Path for the overview circle table output
     #[arg(long)]
     circle_table: PathBuf,
@@ -65,6 +71,7 @@ pub(crate) fn main_table(args: TableArgs) -> Result<()> {
     write_circle_table(
         File::create(&args.circle_table).map(BufWriter::new)?,
         &circle_summaries,
+        &args.joint_event_name,
     )?;
 
     for (event_name, (_, annotated_circle)) in details {
@@ -226,7 +233,7 @@ fn tables_from_annotated_graph(
                     gene_names,
                     regulatory_features,
                     repeats,
-                    varlociraptor_event_prob: varlociraptor_info.event_probs.values().sum(),
+                    prob_joint_event: varlociraptor_info.event_probs.values().sum(),
                     prob_absent: varlociraptor_info.prob_absent,
                     prob_artifact: varlociraptor_info.prob_absent,
                     af_nanopore: varlociraptor_info.af_nanopore,
@@ -234,7 +241,7 @@ fn tables_from_annotated_graph(
         })
         .sorted_unstable_by_key(|table_entry| {
             (
-                OrderedFloat(1. - table_entry.varlociraptor_event_prob),
+                OrderedFloat(1. - table_entry.prob_joint_event),
                 -(table_entry.num_exons as i64),
                 OrderedFloat(table_entry.prob_absent),
                 table_entry.graph_id,
@@ -258,12 +265,15 @@ fn segment_table_writer(
     ))
 }
 
-fn write_circle_table<W: Write>(writer: W, circle_table: &[FlatCircleTableInfo]) -> Result<()> {
+fn write_circle_table<W: Write>(writer: W, circle_table: &[FlatCircleTableInfo], joint_event_name: &String) -> Result<()> {
     let mut writer: csv::Writer<_> = csv::WriterBuilder::new()
         .delimiter(b'\t')
         .has_headers(false)
         .from_writer(writer);
-    writer.write_record(FlatCircleTableInfo::FIELD_NAMES_AS_ARRAY)?;
+    // Construct header manually, to allow specifying
+    let header = FlatCircleTableInfo::FIELD_NAMES_AS_ARRAY.map(|name| name.replace("joint_event", joint_event_name));
+    // Write header manually, to also get a header when circle_table is empty
+    writer.write_record(header)?;
     for entry in circle_table {
         writer.serialize(entry)?;
     }
@@ -400,7 +410,7 @@ struct FlatCircleTableInfo {
     regulatory_features: String,
     repeats: String,
     num_split_reads: usize,
-    varlociraptor_event_prob: f32,
+    prob_joint_event: f32,
     prob_absent: f32,
     prob_artifact: f32,
     af_nanopore: Option<f32>,
