@@ -33,7 +33,7 @@ pub(crate) struct TableArgs {
     #[arg()]
     records: PathBuf,
 
-    /// Path to reference
+    /// Path to reference file in fasta format
     #[arg(long)]
     reference: PathBuf,
     
@@ -138,7 +138,7 @@ fn get_value_from_prob_name(prob_name: &String, record: &Record) -> f32 {
         .unwrap_or_else(|| panic!("'{}' info field not found", prob_name))
 }
 
-fn varlociraptor_info(records: &[Record], prob_info_fields: &Vec<String>) -> VarlociraptorInfo {
+fn varlociraptor_info(records: &[Record], prob_info_fields: &[String]) -> VarlociraptorInfo {
     let r = &records[0];
 
     let prob_absent = get_value_from_prob_name(&String::from("PROB_ABSENT"), r);
@@ -177,7 +177,7 @@ fn tables_from_annotated_graph(
     graph: &AnnotatedGraph,
     event_records: &HashMap<String, Vec<Record>>,
     reference: &Reference,
-    prob_info_fields: &Vec<String>,
+    prob_info_fields: &[String],
 ) -> Result<(
     Vec<FlatCircleTableInfo>,
     HashMap<String, (VarlociraptorInfo, AnnotatedCircle)>,
@@ -235,7 +235,7 @@ fn tables_from_annotated_graph(
                     repeats,
                     prob_joint_event: varlociraptor_info.event_probs.values().sum(),
                     prob_absent: varlociraptor_info.prob_absent,
-                    prob_artifact: varlociraptor_info.prob_absent,
+                    prob_artifact: varlociraptor_info.prob_artifact,
                     af_nanopore: varlociraptor_info.af_nanopore,
                 })
         })
