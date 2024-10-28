@@ -9,7 +9,7 @@ edition = "2021"
 bam = "0.1.4"
 anyhow = "1.0.70"
 itertools = "0.10.5"
-clap = { version = "4.2.1", features = ["derive"] }
+clap = { version = "4.5.20", features = ["derive"] }
 noodles = { version = "0.28", features = ["bcf", "vcf", "bgzf"] }
 bio = "1.1.0"
 rayon = "1.7.0"
@@ -24,6 +24,7 @@ statrs = "0.16.0"
 ordered-float = "3.6.0"
 lazy_static = "1.4.0"
 csv = "1.1.6"
+struct-field-names-as-array = "0.3"
 
 [dependencies.enumflags2]
 version = "0.7.6"
@@ -38,7 +39,7 @@ version = "1.0.145"
 features = ["derive"]
 
 [dependencies.plotly]
-version = "0.8.3"
+version = "0.10.0"
 features = ["kaleido"]
 
 [dependencies.strum]

@@ -256,7 +256,7 @@ pub(crate) fn plot(
                 .collect_vec(),
         )
         .name(s)
-        .width((bin_size as f64 * 0.95).round() as usize)
+        .width(bin_size as f64 * 0.95)
         // from https://personal.sron.nl/~pault/
         .marker(Marker::new().color(match feature {
             Feature::Match => Rgb::new(0, 119, 187),         // "blue"
@@ -287,25 +287,25 @@ pub(crate) fn plot(
         .bar_mode(BarMode::Stack)
         .x_axis(
             Axis::new()
-                .title(Title::new("target position"))
+                .title(Title::with_text("target position"))
                 .range(vec![plot_region.start as f64, plot_region.end as f64]),
         )
         .y_axis(
             Axis::new()
-                .title(Title::new("ratio of bases"))
+                .title(Title::with_text("ratio of bases"))
                 .anchor("x")
                 .range(vec![0., 1.])
                 .side(AxisSide::Left),
         )
         .y_axis2(
             Axis::new()
-                .title(Title::new("read depth"))
+                .title(Title::with_text("read depth"))
                 .overlaying("y")
                 .anchor("x")
                 .range(vec![0., max_read_depth as f64])
                 .side(AxisSide::Right),
         )
-        .title(Title::new(&format!(
+        .title(Title::with_text(&format!(
             "Coverage for region {}:{}-{}, length: {} (bin_size: {})",
             &target_region.target,
             target_region.start,
