@@ -8,7 +8,7 @@ use num_traits::{One, Zero};
 use rayon::prelude::*;
 
 pub(crate) type ReferenceId = u32;
-pub(crate) type Count = i32;
+pub(crate) type Count = i16;
 pub(crate) type ReadDepth = HashMap<ReferenceId, Vec<Count>>;
 pub(crate) type SplitReadStorage = HashMap<String, Vec<Record>>;
 pub(crate) type RecordTree<'a> = ArrayBackedIntervalTree<usize, &'a Record>;
